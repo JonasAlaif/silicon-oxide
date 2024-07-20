@@ -2,35 +2,36 @@ use std::sync::OnceLock;
 
 use egg::{Applier, EGraph, Id, Searcher, Subst};
 
-use crate::{exp::Exp, meaning::{Constant, Meaning}};
+use crate::{exp::{BinOp, Exp}, meaning::{Constant, Meaning}};
 
-static RULES: OnceLock<[egg::Rewrite<Exp, Meaning>; 35]> = OnceLock::new();
+static RULES: OnceLock<[egg::Rewrite<Exp, Meaning>; 33]> = OnceLock::new();
 pub fn rules() -> &'static [egg::Rewrite<Exp, Meaning>] {
     RULES.get_or_init(|| {
         [
-            egg::rewrite!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
-            egg::rewrite!("commute-gt"; "(> ?a ?b)" => "(< ?b ?a)"),
-            egg::rewrite!("commute-eq"; "(== ?a ?b)" => "(== ?b ?a)"),
-            egg::rewrite!("commute-neq"; "(!= ?a ?b)" => "(!= ?b ?a)"),
             egg::rewrite!("commute-and"; "(&& ?a ?b)" => "(&& ?b ?a)"),
             egg::rewrite!("commute-or"; "(|| ?a ?b)" => "(|| ?b ?a)"),
-
-            egg::rewrite!("expand-le"; "(<= ?a ?b)" => "(|| (== ?a ?b) (< ?a ?b))"),
-            egg::rewrite!("expand-ge"; "(>= ?a ?b)" => "(|| (== ?a ?b) (> ?a ?b))"),
+            egg::rewrite!("commute-eq"; "(== ?a ?b)" => "(== ?b ?a)"),
+            egg::rewrite!("commute-plus"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+            egg::rewrite!("commute-mult"; "(* ?a ?b)" => "(+ ?b ?a)"),
 
             egg::rewrite!("and-true"; "(&& ?a true)" => "?a"),
             egg::rewrite!("and-false"; "(&& ?a false)" => "false"),
+            egg::rewrite!("and-same"; "(&& ?a ?a)" => "?a"),
             egg::rewrite!("or-true"; "(|| ?a true)" => "true"),
             egg::rewrite!("or-false"; "(|| ?a false)" => "?a"),
+            egg::rewrite!("or-same"; "(|| ?a ?a)" => "?a"),
             egg::rewrite!("eq-reflexive"; "(== ?a ?a)" => "true"),
-            egg::rewrite!("neq-rewrite"; "(!= ?a ?b)" => "(! (== ?a ?b))"),
 
+            egg::rewrite!("demorgan-or"; "(! (|| ?a ?a))" => "(&& (! ?a) (! ?a))"),
+            egg::rewrite!("demorgan-and"; "(! (&& ?a ?a))" => "(|| (! ?a) (! ?a))"),
+
+            // TODO: these two may not be necessary
             egg::rewrite!("not-true"; "(! true)" => "false"),
             egg::rewrite!("not-false"; "(! false)" => "true"),
+
             egg::rewrite!("not-not"; "(! (! ?a))" => "?a"),
             egg::rewrite!("excluded-middle"; "(|| ?a (! ?a))" => "true"),
 
-            egg::rewrite!("sub-to-plus"; "(- ?a ?b)" => "(+ ?a (- ?b))"),
             egg::rewrite!("minus-self"; "(+ ?a (- ?a))" => "0"),
 
             egg::rewrite!("plus-zero"; "(+ ?a 0)" => "?a"),
@@ -57,7 +58,6 @@ pub fn rules() -> &'static [egg::Rewrite<Exp, Meaning>] {
 
             egg::rewrite!("write"; "write" => "1"),
             egg::rewrite!("none"; "none" => "0"),
-            egg::rewrite!("number"; "?a" => "(/ ?a 1)" if is_number("?a")),
 
             // egg::rewrite!("test"; "(- (/ ?a ?b) (/ ?c ?d))" => "(/ (- (* ?a ?d) (* ?c ?b)) (* ?b ?d))"),// { MySillyApplier("foo") }),
 
@@ -134,7 +134,7 @@ impl Searcher<Exp, Meaning> for BoolSearcher {
     ) -> Option<egg::SearchMatches<Exp>> {
         BoolSearcher::search(egraph, eclass, limit, |enode, is_true, true_, false_| {
             match enode {
-                Exp::BinOp(silver_oxide::ast::BinOp::And, [a, b]) => {
+                Exp::BinOp(BinOp::And, [a, b]) => {
                     is_true.then(|| {
                         let mut subst = Subst::with_capacity(3);
                         subst.insert("?0".parse().unwrap(), true_);
@@ -143,7 +143,7 @@ impl Searcher<Exp, Meaning> for BoolSearcher {
                         subst
                     })
                 }
-                Exp::BinOp(silver_oxide::ast::BinOp::Or, [a, b]) => {
+                Exp::BinOp(BinOp::Or, [a, b]) => {
                     (!is_true).then(|| {
                         let mut subst = Subst::with_capacity(3);
                         subst.insert("?0".parse().unwrap(), false_);
@@ -179,7 +179,7 @@ impl Searcher<Exp, Meaning> for BoolSearcher {
                     subst.insert("?1".parse().unwrap(), *e);
                     Some(subst)
                 }
-                Exp::BinOp(silver_oxide::ast::BinOp::Eq, [a, b]) => {
+                Exp::BinOp(BinOp::Eq, [a, b]) => {
                     is_true.then(|| {
                         let mut subst = Subst::with_capacity(2);
                         subst.insert("?0".parse().unwrap(), *a);
@@ -253,7 +253,7 @@ impl Searcher<Exp, Meaning> for Calculator {
                 continue;
             };
             let subst = match op {
-                silver_oxide::ast::BinOp::Lt => {
+                BinOp::Lt => {
                     let is_true = a < b;
                     let value = if is_true {
                         egraph.lookup(Exp::Const(silver_oxide::ast::Const::True))?
@@ -265,7 +265,7 @@ impl Searcher<Exp, Meaning> for Calculator {
                     subst.insert("?1".parse().unwrap(), eclass);
                     subst
                 }
-                silver_oxide::ast::BinOp::Eq => {
+                BinOp::Eq => {
                     let is_true = a == b;
                     let value = if is_true {
                         egraph.lookup(Exp::Const(silver_oxide::ast::Const::True))?

@@ -1,6 +1,6 @@
 use fxhash::FxHashMap;
 
-use crate::{error::Error, exp::Exp, state::{State, TranslationMode}};
+use crate::{error::Error, exp::{BinOp, Exp}, state::{State, TranslationMode}};
 
 #[derive(Debug, Clone)]
 pub struct Silicon<'a> {
@@ -60,6 +60,7 @@ impl<'a> Silicon<'a> {
             id += 1;
         }
 
+        self_.state.egraph.egraph.dot().with_config_line("ranksep=2.5").to_dot(format!("./test99_post.dot")).unwrap();
         println!("HEAP: {:#?}", self_.state.heap);
         for post in method.contract.postconditions.iter() {
             self_.state.assert(post, &self_.pc).unwrap()
@@ -111,9 +112,9 @@ impl<'a> Silicon<'a> {
                 let conditions: Vec<_> = elseif.iter()
                     .map(|(cond, block)| {
                         let cond = self.state.translate(cond, TranslationMode::Expression, &self.pc).unwrap();
-                        let pc = self.state.egraph.add(Exp::BinOp(silver_oxide::ast::BinOp::And, [curr_cond, cond]));
+                        let pc = self.state.egraph.add(Exp::BinOp(BinOp::And, [curr_cond, cond]));
                         let neg_cond = self.state.egraph.add(Exp::Not(cond));
-                        curr_cond = self.state.egraph.add(Exp::BinOp(silver_oxide::ast::BinOp::And, [curr_cond, neg_cond]));
+                        curr_cond = self.state.egraph.add(Exp::BinOp(BinOp::And, [curr_cond, neg_cond]));
                         (pc, block)
                     })
                     .collect();
@@ -142,12 +143,12 @@ impl<'a> Silicon<'a> {
                 //     let cond = curr.state.translate(cond, TranslationMode::Expression, &self.pc).unwrap();
                 //     let mut next = curr.clone();
 
-                //     let path_cond = curr.state.egraph.add(Exp::BinOp(silver_oxide::ast::BinOp::And, [prev_cond, cond]));
+                //     let path_cond = curr.state.egraph.add(Exp::BinOp(BinOp::And, [prev_cond, cond]));
                 //     curr.state.egraph.assume(path_cond, "path condition");
                 //     curr.statements = curr.statements.iter().copied().chain(then.statements.iter().rev()).collect();
 
                 //     let neg_cond = next.state.egraph.add(Exp::Not(cond));
-                //     prev_cond = next.state.egraph.add(Exp::BinOp(silver_oxide::ast::BinOp::And, [prev_cond, neg_cond]));
+                //     prev_cond = next.state.egraph.add(Exp::BinOp(BinOp::And, [prev_cond, neg_cond]));
                 //     self_.push(next);
                 // }
 

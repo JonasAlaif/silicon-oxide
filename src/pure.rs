@@ -1,7 +1,6 @@
-use num_rational::BigRational;
+use crate::{egg::rules, exp::{BinOp, Exp, SymbolicValue}, meaning::{Constant, Meaning}};
 
-use crate::{egg::rules, exp::{Exp, SymbolicValue}, meaning::{Constant, Meaning}};
-
+pub type EClass = egg::EClass<Exp, Option<Constant>>;
 
 #[derive(Debug, Clone)]
 pub struct EGraph {
@@ -44,9 +43,30 @@ impl EGraph {
         id
     }
 
+    pub fn has_inconsistency(&self) -> Option<&EClass> {
+        self.egraph.classes().find(|class| class.data == Some(Constant::Inconsistent))
+    }
+    pub fn has_type_error(&self) -> Option<&EClass> {
+        self.egraph.classes().find(|class| class.data == Some(Constant::TypeError))
+    }
+
     pub fn add(&mut self, exp: Exp) -> egg::Id {
         self.egraph.add(exp)
     }
+    pub fn add_binop(&mut self, op: silver_oxide::ast::BinOp, lhs: egg::Id, rhs: egg::Id) -> egg::Id {
+        BinOp::translate(op, lhs, rhs, self)
+    }
+
+    pub fn negate_pc(&mut self, pc: &[egg::Id]) -> egg::Id {
+        pc.split_first().map(|(first, rest)| {
+            let first_neg = self.add(Exp::Not(*first));
+            rest.iter().fold(first_neg, |acc, pc| {
+                let neg = self.add(Exp::Not(*pc));
+                self.add(Exp::BinOp(BinOp::Or, [acc, neg]))
+            })
+        }).unwrap_or(self.false_())
+    }
+
     pub fn equate(&mut self, id1: egg::Id, id2: egg::Id, reason: impl Into<egg::Symbol>) {
         self.egraph.union_trusted(id1, id2, reason);
     }
@@ -69,10 +89,6 @@ impl EGraph {
 
     pub fn normalise(&self, id: egg::Id) -> egg::Id {
         self.egraph.find(id)
-    }
-
-    fn is_equal(&mut self, id1: egg::Id, id2: egg::Id) -> bool {
-        self.normalise(id1) == self.normalise(id2)
     }
 
     pub fn is_true(&mut self, exp: egg::Id) -> bool {

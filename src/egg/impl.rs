@@ -3,7 +3,7 @@ use std::slice::{from_mut, from_ref};
 
 use egg::{FromOp, Language};
 
-use crate::exp::Exp;
+use crate::exp::{BinOp, Exp};
 
 impl FromOp for Exp {
     type Error = ();
@@ -17,20 +17,14 @@ impl FromOp for Exp {
             ("!", &[child]) => Ok(Exp::Not(child)),
             ("-", &[child]) => Ok(Exp::Neg(child)),
 
-            ("+", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Plus, [lhs, rhs])),
-            ("-", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Minus, [lhs, rhs])),
-            (">", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Gt, [lhs, rhs])),
-            // TODO: remove the following 3 ops and instead simplify them on the fly
-            (">=", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Ge, [lhs, rhs])),
-            ("<", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Lt, [lhs, rhs])),
-            ("<=", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Le, [lhs, rhs])),
-            ("&&", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::And, [lhs, rhs])),
-            ("||", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Or, [lhs, rhs])),
-            ("==", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Eq, [lhs, rhs])),
-            ("!=", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Neq, [lhs, rhs])),
-            ("/", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Div, [lhs, rhs])),
-            ("*", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Mult, [lhs, rhs])),
-            ("%", &[lhs, rhs]) => Ok(Exp::BinOp(silver_oxide::ast::BinOp::Mod, [lhs, rhs])),
+            ("+", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Plus, [lhs, rhs])),
+            ("<", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Lt, [lhs, rhs])),
+            ("&&", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::And, [lhs, rhs])),
+            ("||", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Or, [lhs, rhs])),
+            ("==", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Eq, [lhs, rhs])),
+            ("/", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Div, [lhs, rhs])),
+            ("*", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Mult, [lhs, rhs])),
+            ("%", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Mod, [lhs, rhs])),
 
             ("?", &[cond, then, els]) => Ok(Exp::Ternary([cond, then, els])),
             (number, &[]) if number.parse::<num_bigint::BigUint>().is_ok() => {
@@ -59,6 +53,7 @@ impl Language for Exp {
         match self {
             Exp::Const(_) => &[],
             Exp::FuncApp(_, children) => children,
+            Exp::PredicateApp(_, children) => children,
             Exp::SymbolicValue(_) => &[],
             Exp::BinOp(_, children) => children,
             Exp::Ternary(children) => children,
@@ -71,6 +66,7 @@ impl Language for Exp {
         match self {
             Exp::Const(_) => &mut [],
             Exp::FuncApp(_, children) => children,
+            Exp::PredicateApp(_, children) => children,
             Exp::SymbolicValue(_) => &mut [],
             Exp::BinOp(_, children) => children,
             Exp::Ternary(children) => children,

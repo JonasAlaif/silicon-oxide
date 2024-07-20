@@ -1,6 +1,6 @@
 use std::{fs::read_to_string, io};
 
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::FxHashMap;
 use silicon_oxide::silicon::Silicon;
 use silver_oxide::{ast, peg};
 

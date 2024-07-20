@@ -1,6 +1,6 @@
 use fxhash::FxHashMap;
 
-use crate::{error::Error, exp::Exp, heap::Heap, pure::EGraph};
+use crate::{error::Error, exp::{BinOp, Exp}, heap::Heap, pure::EGraph};
 
 #[derive(Debug, Clone)]
 pub struct State<'a> {
@@ -34,31 +34,14 @@ impl<'a> State<'a> {
     }
     fn inhale_inner<'e>(&mut self, exp: &'e silver_oxide::ast::Exp, reason: impl Into<egg::Symbol>, mode: TranslationMode, pc: &[egg::Id]) -> Result<(), Error<'e>> {
         let id = self.translate(&exp, mode, pc)?;
+        let neg_pc = self.egraph.negate_pc(pc);
+        let id = self.egraph.add(Exp::BinOp(BinOp::Or, [neg_pc, id]));
+
         let true_ = self.egraph.true_();
         self.egraph.equate(id, true_, reason);
         self.egraph.rebuild();
         Ok(())
     }
-
-    // fn translate_acc<'e>(&mut self, acc: &'e silver_oxide::ast::AccExp) -> Result<(egg::Id, egg::Id, Option<egg::Id>), Error<'e>> {
-    //     use silver_oxide::ast::AccExp::*;
-    //     let (loc, perm) = match acc {
-    //         Acc(silver_oxide::ast::LocAccess { loc }, Some(perm)) =>
-    //             (loc, self.translate(perm, TranslationMode::Expression)?),
-    //             Acc(silver_oxide::ast::LocAccess { loc }, None) | PredicateAccess(loc) =>
-    //             (loc, self.egraph.write()),
-    //     };
-    //     let is_field = matches!(loc, silver_oxide::ast::Exp::Field(..));
-    //     let loc = self.translate(loc, TranslationMode::Mutating { inhale: todo!() })?;
-    //     Ok((loc, perm, is_field.then(|| self.egraph.write())))
-    // }
-
-    // fn add_heap<'e>(&mut self, acc: &'e silver_oxide::ast::AccExp) -> Result<(), Error<'e>> {
-    //     let (loc, perm, bound) = self.translate_acc(acc)?;
-    //     let loc = self.egraph.normalise(loc);
-    //     self.heap.add_chunk(&mut self.egraph, loc, perm, &[], bound);
-    //     Ok(())
-    // }
 
     pub fn exhale<'e>(&mut self, exp: &'e silver_oxide::ast::Exp, pc: &[egg::Id]) -> Result<(), Error<'e>> {
         self.exhale_inner(exp, TranslationMode::Mutating { inhale: false }, pc)
@@ -71,19 +54,17 @@ impl<'a> State<'a> {
         if self.egraph.is_true(id) {
             return Ok(())
         }
+        let neg_pc = self.egraph.negate_pc(pc);
+        let id = self.egraph.add(Exp::BinOp(BinOp::Or, [neg_pc, id]));
+
         self.egraph.saturate();
-        self.egraph.egraph.dot().with_config_line("ranksep=2.5").to_pdf(format!("./saturate.pdf")).unwrap();
+        self.egraph.egraph.dot().with_config_line("ranksep=2.5").to_pdf(format!("./exhale.pdf")).unwrap();
         if self.egraph.is_true(id) {
             Ok(())
         } else {
             Err(Error::exhale_unknown(exp))
         }
     }
-
-    // pub fn remove_heap<'e>(&mut self, acc: &'e silver_oxide::ast::AccExp) -> Result<(), Error<'e>> {
-    //     let (loc, perm, _) = self.translate_acc(acc)?;
-    //     self.heap.remove_chunk(&mut self.egraph, loc, perm, &[]).map_err(|_| Error::exhale_missing_permission(acc))
-    // }
 
     pub fn translate<'e>(&mut self, exp: &'e silver_oxide::ast::Exp, mode: TranslationMode, pc: &[egg::Id]) -> Result<egg::Id, Error<'e>> {
         self.translate_inner(exp, mode, &mut pc.to_vec())
@@ -94,9 +75,15 @@ impl<'a> State<'a> {
     }
 
     fn translate_inner<'e>(&mut self, exp: &'e silver_oxide::ast::Exp, mode: TranslationMode, pc: &mut Vec<egg::Id>) -> Result<egg::Id, Error<'e>> {
+        let pc_len = pc.len();
+        let res = self.translate_inner_pc(exp, mode, pc);
+        debug_assert_eq!(pc.len(), pc_len);
+        res
+    }
+    fn translate_inner_pc<'e>(&mut self, exp: &'e silver_oxide::ast::Exp, mode: TranslationMode, pc: &mut Vec<egg::Id>) -> Result<egg::Id, Error<'e>> {
         use silver_oxide::ast::Exp::*;
         use silver_oxide::ast::BinOp;
-        let pc_len = pc.len();
+        // Hopefully this gets inlined
         let exp = match exp {
             Const(c) => Exp::Const(c.clone()),
             Ident(i) =>
@@ -117,7 +104,7 @@ impl<'a> State<'a> {
                 if matches!(op, BinOp::And | BinOp::Implies | BinOp::Or) {
                     pc.pop();
                 }
-                Exp::BinOp(*op, [lhs, rhs])
+                return Ok(self.egraph.add_binop(*op, lhs, rhs))
             }
             Ternary(c, t, f) => {
                 let c = self.translate_inner(c, TranslationMode::Expression, pc)?;
@@ -155,7 +142,6 @@ impl<'a> State<'a> {
                 return self.translate_acc_exp(acc, mode, pc),
             _ => todo!("{exp:?}"),
         };
-        debug_assert_eq!(pc.len(), pc_len);
         Ok(self.egraph.add(exp))
     }
 
@@ -215,7 +201,7 @@ impl<'a> State<'a> {
             TranslationMode::Fact => {
                 let curr_perm = self.heap.get_permission(&mut self.egraph, loc, pc)
                     .map_err(|_| Error::misc_error(0))?;
-                Ok(self.egraph.add(Exp::BinOp(silver_oxide::ast::BinOp::Le, [perm, curr_perm])))
+                Ok(self.egraph.add_binop(silver_oxide::ast::BinOp::Le, perm, curr_perm))
             }
             TranslationMode::Expression => unreachable!(),
         }

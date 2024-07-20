@@ -4,7 +4,7 @@ use egg::Analysis;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 
-use crate::exp::Exp;
+use crate::exp::{BinOp, Exp};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Meaning;
@@ -13,7 +13,8 @@ pub struct Meaning;
 pub enum Constant {
     Bool(bool),
     Rational(BigRational),
-    Error,
+    Inconsistent,
+    TypeError,
 }
 
 impl Neg for &'_ Constant {
@@ -21,7 +22,8 @@ impl Neg for &'_ Constant {
     fn neg(self) -> Self::Output {
         match self {
             Constant::Rational(r) => Constant::Rational(-r),
-            _ => Constant::Error,
+            Constant::Inconsistent => Constant::Inconsistent,
+            _ => Constant::TypeError,
         }
     }
 }
@@ -31,7 +33,8 @@ impl Not for &'_ Constant {
     fn not(self) -> Self::Output {
         match self {
             Constant::Bool(b) => Constant::Bool(!b),
-            _ => Constant::Error,
+            Constant::Inconsistent => Constant::Inconsistent,
+            _ => Constant::TypeError,
         }
     }
 }
@@ -43,7 +46,8 @@ macro_rules! impl_binop {
             fn $method(self, other: Self) -> Self::Output {
                 match (self, other) {
                     (Constant::Rational(a), Constant::Rational(b)) => Constant::Rational(a $op b),
-                    _ => Constant::Error,
+                    (Constant::Inconsistent, _) | (_, Constant::Inconsistent) => Constant::Inconsistent,
+                    _ => Constant::TypeError,
                 }
             }
         }
@@ -58,8 +62,9 @@ impl Div for &'_ Constant {
     fn div(self, other: Self) -> Self::Output {
         match (self, other) {
             (Constant::Rational(a), Constant::Rational(b)) =>
-                if b.numer() == &BigInt::from(0u8) { Constant::Error } else { Constant::Rational(a / b) },
-            _ => Constant::Error,
+                if b.numer() == &BigInt::from(0u8) { Constant::Inconsistent } else { Constant::Rational(a / b) },
+            (Constant::Inconsistent, _) | (_, Constant::Inconsistent) => Constant::Inconsistent,
+            _ => Constant::TypeError,
         }
     }
 }
@@ -78,11 +83,11 @@ impl Analysis<Exp> for Meaning {
             Exp::Neg(e) => - egraph[*e].data.as_ref()?,
             // Not strictly necessary as this should get simplified anyway
             Exp::Not(e) => ! egraph[*e].data.as_ref()?,
-            Exp::BinOp(silver_oxide::ast::BinOp::Plus, [a, b]) =>
+            Exp::BinOp(BinOp::Plus, [a, b]) =>
                 egraph[*a].data.as_ref()? + egraph[*b].data.as_ref()?,
-            Exp::BinOp(silver_oxide::ast::BinOp::Mult, [a, b]) =>
+            Exp::BinOp(BinOp::Mult, [a, b]) =>
                 egraph[*a].data.as_ref()? * egraph[*b].data.as_ref()?,
-            Exp::BinOp(silver_oxide::ast::BinOp::Div, [a, b]) =>
+            Exp::BinOp(BinOp::Div, [a, b]) =>
                 egraph[*a].data.as_ref()? / egraph[*b].data.as_ref()?,
             _ => return None,
         };
@@ -93,8 +98,12 @@ impl Analysis<Exp> for Meaning {
         match (a, b) {
             (Some(a), Some(b)) if a == &b => egg::DidMerge(false, false),
             (Some(a), Some(b)) => {
-                let a = std::mem::replace(a, Constant::Error);
-                egg::DidMerge(matches!(a, Constant::Error), matches!(b, Constant::Error))
+                let same_type = std::mem::discriminant(a) == std::mem::discriminant(&b);
+                let inconsistent = *a == Constant::Inconsistent || b == Constant::Inconsistent;
+                let new = if same_type || inconsistent { Constant::Inconsistent } else { Constant::TypeError };
+
+                let old_a = std::mem::replace(a, new);
+                egg::DidMerge(old_a != *a, b != *a)
             }
             (None, None) => egg::DidMerge(false, false),
             (Some(_), None) => egg::DidMerge(false, true),

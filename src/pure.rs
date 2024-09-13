@@ -2,40 +2,59 @@ use crate::{egg::rules, exp::{BinOp, Exp, SymbolicValue}, meaning::{Constant, Me
 
 pub type EClass = egg::EClass<Exp, Option<Constant>>;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Constants {
+    pub true_: egg::Id,
+    pub false_: egg::Id,
+    /// Also equal to the integer 0.
+    pub none: egg::Id,
+    /// Also equal to the integer 1.
+    pub write: egg::Id,
+}
+
+impl Constants {
+    pub fn new<N: egg::Analysis<Exp>>(egraph: &mut egg::EGraph<Exp, N>) -> Self {
+        let true_ = egraph.add(Exp::Const(silver_oxide::ast::Const::Bool(true)));
+        let false_ = egraph.add(Exp::Const(silver_oxide::ast::Const::Bool(false)));
+        // let not_true_ = egraph.add(Exp::Not(true_));
+        // let not_false_ = egraph.add(Exp::Not(false_));
+        // egraph.union_trusted(true_, not_false_, "true is not false");
+        // egraph.union_trusted(false_, not_true_, "false is not true");
+
+        let none = egraph.add(Exp::Const(silver_oxide::ast::Const::None));
+        let write = egraph.add(Exp::Const(silver_oxide::ast::Const::Write));
+        Self { true_, false_, none, write }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EGraph {
     pub egraph: egg::EGraph<Exp, Meaning>,
     pub next_symbolic_value: u64,
 
-    pub true_: egg::Id,
-    pub false_: egg::Id,
-    pub none: egg::Id,
-    pub write: egg::Id,
+    constants: Constants,
 }
 
 impl Default for EGraph {
     fn default() -> Self {
         let mut egraph = egg::EGraph::default();
-        let true_ = egraph.add(Exp::Const(silver_oxide::ast::Const::True));
-        let false_ = egraph.add(Exp::Const(silver_oxide::ast::Const::False));
-        let none = egraph.add(Exp::Const(silver_oxide::ast::Const::None));
-        let write = egraph.add(Exp::Const(silver_oxide::ast::Const::Write));
-        Self { egraph, next_symbolic_value: 0, true_, false_, none, write }
+        let constants = Constants::new(&mut egraph);
+        Self { egraph, next_symbolic_value: 0, constants }
     }
 }
 
 impl EGraph {
     pub fn true_(&self) -> egg::Id {
-        self.true_
+        self.constants.true_
     }
     pub fn false_(&self) -> egg::Id {
-        self.false_
+        self.constants.false_
     }
     pub fn none(&self) -> egg::Id {
-        self.none
+        self.constants.none
     }
     pub fn write(&self) -> egg::Id {
-        self.write
+        self.constants.write
     }
     pub fn next_symbolic_value(&mut self, name: Option<String>) -> egg::Id {
         let id = self.egraph.add(Exp::SymbolicValue(SymbolicValue(self.next_symbolic_value, name)));
@@ -56,22 +75,29 @@ impl EGraph {
     pub fn add_binop(&mut self, op: silver_oxide::ast::BinOp, lhs: egg::Id, rhs: egg::Id) -> egg::Id {
         BinOp::translate(op, lhs, rhs, self)
     }
+    pub fn add_snapshot(&mut self, snapshot: Vec<egg::Id>) -> egg::Id {
+        let snap = self.add(Exp::Snapshot(snapshot.clone()));
+        for (i, child) in snapshot.into_iter().enumerate() {
+            let i = self.add(Exp::Project(snap, i));
+            self.equate(child, i, "snap-inj");
+        }
+        snap
+    }
 
-    pub fn negate_pc(&mut self, pc: &[egg::Id]) -> egg::Id {
-        pc.split_first().map(|(first, rest)| {
-            let first_neg = self.add(Exp::Not(*first));
-            rest.iter().fold(first_neg, |acc, pc| {
-                let neg = self.add(Exp::Not(*pc));
-                self.add(Exp::BinOp(BinOp::Or, [acc, neg]))
+    pub fn fold(&mut self, op: BinOp, default: egg::Id, mut items: impl Iterator<Item = egg::Id>) -> egg::Id {
+        let first = items.next();
+        first.map(|first| {
+            items.fold(first, |acc, item| {
+                self.add(Exp::BinOp(op, [acc, item]))
             })
-        }).unwrap_or(self.false_())
+        }).unwrap_or(default)
     }
 
     pub fn equate(&mut self, id1: egg::Id, id2: egg::Id, reason: impl Into<egg::Symbol>) {
         self.egraph.union_trusted(id1, id2, reason);
     }
     pub fn assume(&mut self, id: egg::Id, reason: impl Into<egg::Symbol>) {
-        self.egraph.union_trusted(id, self.true_, reason);
+        self.egraph.union_trusted(id, self.true_(), reason);
     }
     pub fn rebuild(&mut self) {
         if !self.egraph.clean {
@@ -82,7 +108,7 @@ impl EGraph {
         let egraph = std::mem::replace(&mut self.egraph, egg::EGraph::default());
         let runner = egg::Runner::default().with_egraph(egraph);
 
-        let runner = runner.run(rules());
+        let runner = runner.run(rules(self.constants));
 
         self.egraph = runner.egraph;
     }
@@ -91,10 +117,10 @@ impl EGraph {
         self.egraph.find(id)
     }
 
-    pub fn is_true(&mut self, exp: egg::Id) -> bool {
+    pub fn is_true(&self, exp: egg::Id) -> bool {
         self.egraph[exp].data == Some(Constant::Bool(true))
     }
-    pub fn is_false(&mut self, exp: egg::Id) -> bool {
+    pub fn is_false(&self, exp: egg::Id) -> bool {
         self.egraph[exp].data == Some(Constant::Bool(false))
     }
 }

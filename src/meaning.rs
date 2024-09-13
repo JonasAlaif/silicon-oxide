@@ -1,10 +1,10 @@
-use std::ops::{Add, Div, Mul, Neg, Not};
+use std::{fmt, ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not}};
 
 use egg::Analysis;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 
-use crate::exp::{BinOp, Exp};
+use crate::exp::{BinOp, Exp, UnOp};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Meaning;
@@ -40,12 +40,12 @@ impl Not for &'_ Constant {
 }
 
 macro_rules! impl_binop {
-    ($trait:ident, $method:ident, $op:tt) => {
+    ($trait:ident, $variant:ident, $method:ident, $op:tt$(, $d:tt)?) => {
         impl $trait for &'_ Constant {
             type Output = Constant;
             fn $method(self, other: Self) -> Self::Output {
                 match (self, other) {
-                    (Constant::Rational(a), Constant::Rational(b)) => Constant::Rational(a $op b),
+                    (Constant::$variant(a), Constant::$variant(b)) => Constant::$variant($($d)?a $op $($d)?b),
                     (Constant::Inconsistent, _) | (_, Constant::Inconsistent) => Constant::Inconsistent,
                     _ => Constant::TypeError,
                 }
@@ -54,8 +54,19 @@ macro_rules! impl_binop {
     };
 }
 
-impl_binop!(Add, add, +);
-impl_binop!(Mul, mul, *);
+impl_binop!(Add, Rational, add, +);
+impl_binop!(Mul, Rational, mul, *);
+impl_binop!(BitAnd, Bool, bitand, &&, *);
+impl_binop!(BitOr, Bool, bitor, ||, *);
+
+impl PartialOrd for Constant {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Constant::Rational(a), Constant::Rational(b)) => a.partial_cmp(b),
+            _ => None,
+        }
+    }
+}
 
 impl Div for &'_ Constant {
     type Output = Constant;
@@ -75,42 +86,87 @@ impl Analysis<Exp> for Meaning {
     fn make(egraph: &egg::EGraph<Exp, Self>, enode: &Exp) -> Self::Data {
         let data = match enode {
             Exp::Const(c) => match c {
-                silver_oxide::ast::Const::True => Constant::Bool(true),
-                silver_oxide::ast::Const::False => Constant::Bool(false),
+                silver_oxide::ast::Const::Bool(b) => Constant::Bool(*b),
                 silver_oxide::ast::Const::Int(n) => Constant::Rational(BigRational::from(BigInt::from(n.clone()))),
                 _ => return None,
             },
-            Exp::Neg(e) => - egraph[*e].data.as_ref()?,
-            // Not strictly necessary as this should get simplified anyway
-            Exp::Not(e) => ! egraph[*e].data.as_ref()?,
+            Exp::UnOp(UnOp::Neg, e) => - egraph[*e].data.as_ref()?,
+            Exp::UnOp(UnOp::Not, e) => ! egraph[*e].data.as_ref()?,
+
             Exp::BinOp(BinOp::Plus, [a, b]) =>
                 egraph[*a].data.as_ref()? + egraph[*b].data.as_ref()?,
             Exp::BinOp(BinOp::Mult, [a, b]) =>
                 egraph[*a].data.as_ref()? * egraph[*b].data.as_ref()?,
             Exp::BinOp(BinOp::Div, [a, b]) =>
                 egraph[*a].data.as_ref()? / egraph[*b].data.as_ref()?,
+            Exp::BinOp(BinOp::Lt, [a, b]) =>
+                Constant::Bool(egraph[*a].data.as_ref()?.partial_cmp(egraph[*b].data.as_ref()?)?.is_lt()),
+            Exp::BinOp(BinOp::Eq, [a, b]) =>
+                Constant::Bool(egraph[*a].data.as_ref()? == egraph[*b].data.as_ref()?),
+            // Not strictly necessary as this should get simplified anyway
+            Exp::BinOp(BinOp::And, [a, b]) =>
+                egraph[*a].data.as_ref()? & egraph[*b].data.as_ref()?,
+            Exp::BinOp(BinOp::Or, [a, b]) =>
+                egraph[*a].data.as_ref()? | egraph[*b].data.as_ref()?,
             _ => return None,
         };
         Some(data)
     }
 
     fn merge(&mut self, a: &mut Self::Data, b: Self::Data) -> egg::DidMerge {
-        match (a, b) {
-            (Some(a), Some(b)) if a == &b => egg::DidMerge(false, false),
-            (Some(a), Some(b)) => {
-                let same_type = std::mem::discriminant(a) == std::mem::discriminant(&b);
-                let inconsistent = *a == Constant::Inconsistent || b == Constant::Inconsistent;
-                let new = if same_type || inconsistent { Constant::Inconsistent } else { Constant::TypeError };
+        egg::merge_option(a, b, Constant::merge_fn)
+    }
 
-                let old_a = std::mem::replace(a, new);
-                egg::DidMerge(old_a != *a, b != *a)
+    fn modify(egraph: &mut egg::EGraph<Exp, Self>, id: egg::Id) {
+        match &egraph[id].data {
+            Some(Constant::Bool(b)) => {
+                let c = egraph.add(Exp::Const(silver_oxide::ast::Const::Bool(*b)));
+                egraph.union_trusted(id, c, "same meaning");
             }
-            (None, None) => egg::DidMerge(false, false),
-            (Some(_), None) => egg::DidMerge(false, true),
-            (a@None, Some(b)) => {
-                *a = Some(b);
-                egg::DidMerge(true, false)
+            Some(Constant::Rational(r)) => {
+                let (numer, denom) = (r.numer().clone(), (!r.is_integer()).then(|| r.denom().clone()));
+                let mut div = egraph.add(Exp::Const(silver_oxide::ast::Const::Int(numer)));
+                if let Some(denom) = denom {
+                    let denom = egraph.add(Exp::Const(silver_oxide::ast::Const::Int(denom)));
+                    div = egraph.add(Exp::BinOp(BinOp::Div, [div, denom]));
+                }
+                egraph.union_trusted(id, div, "same meaning");
             }
+            _ => (),
+        }
+    }
+}
+
+impl Constant {
+    fn merge_fn(&mut self, other: Self) -> egg::DidMerge {
+        if self == &other {
+            return egg::DidMerge(false, false)
+        }
+        let same_type = std::mem::discriminant(self) == std::mem::discriminant(&other);
+        let inconsistent = *self == Constant::Inconsistent || other == Constant::Inconsistent;
+        let new = if same_type || inconsistent { Constant::Inconsistent } else { Constant::TypeError };
+
+        let old_a = std::mem::replace(self, new);
+        egg::DidMerge(old_a != *self, other != *self)
+    }
+
+    pub fn compare(&self, b: Option<&Self>) -> Option<bool> {
+        let b = b?;
+        match (self, b) {
+            (Constant::Bool(a), Constant::Bool(b)) => Some(a == b),
+            (Constant::Rational(a), Constant::Rational(b)) => Some(a == b),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Constant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Constant::Bool(b) => write!(f, "{b}"),
+            Constant::Rational(r) => write!(f, "{r}"),
+            Constant::Inconsistent => write!(f, "inconsistent"),
+            Constant::TypeError => write!(f, "type error"),
         }
     }
 }

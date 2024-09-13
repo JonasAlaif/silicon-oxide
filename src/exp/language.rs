@@ -1,6 +1,8 @@
 use std::fmt;
 
-use crate::pure::EGraph;
+use crate::{error::Error, pure::EGraph};
+
+pub type Snapshot = egg::Id;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Exp {
@@ -24,15 +26,17 @@ pub enum Exp {
     // ForPerm(Vec<(Ident, Type)>, Box<ResAccess>, Box<Exp>),
     // Acc(Box<AccExp>),
     FuncApp(silver_oxide::ast::Ident, Vec<egg::Id>),
+    /// Should never have parents!
     PredicateApp(silver_oxide::ast::Ident, Vec<egg::Id>),
     SymbolicValue(SymbolicValue),
     BinOp(BinOp, [egg::Id; 2]),
     Ternary([egg::Id; 3]),
     // Field(Box<Exp>, Ident),
     // Index(Box<Exp>, Box<IndexOp>),
-    Neg(egg::Id),
-    Not(egg::Id),
+    UnOp(UnOp, egg::Id),
     // InhaleExhale(Box<Exp>, Box<Exp>),
+    Snapshot(Vec<egg::Id>),
+    Project(egg::Id, usize),
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,11 +57,21 @@ impl fmt::Display for Exp {
                 write!(f, ")")
             }
             Exp::SymbolicValue(SymbolicValue(sv, None)) => write!(f, "@{sv}"),
-            Exp::SymbolicValue(SymbolicValue(sv, Some(name))) => write!(f, "@{sv}@{name}"),
+            Exp::SymbolicValue(SymbolicValue(sv, Some(name))) => write!(f, "{name}@{sv}"),
             Exp::BinOp(op, [l, r]) => write!(f, "(#{} {:?} #{})", l, op, r),
             Exp::Ternary([c, t, e]) => write!(f, "(#{} ? #{} : #{})", c, t, e),
-            Exp::Neg(e) => write!(f, "-#{}", e),
-            Exp::Not(e) => write!(f, "!#{}", e),
+            Exp::UnOp(op, e) => write!(f, "{op}#{}", e),
+            Exp::Snapshot(es) => {
+                write!(f, "snap(")?;
+                for (i, e) in es.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "#{e}")?;
+                }
+                write!(f, ")")
+            }
+            Exp::Project(e, i) => write!(f, "#{e}[{i}]"),
         }
     }
 }
@@ -80,7 +94,7 @@ impl BinOp {
         use silver_oxide::ast::BinOp::*;
         let op = match op {
             Implies => {
-                lhs = egraph.add(Exp::Not(lhs));
+                lhs = egraph.add(Exp::UnOp(UnOp::Not, lhs));
                 BinOp::Or
             }
             Iff => BinOp::Eq,
@@ -89,13 +103,14 @@ impl BinOp {
             Eq => BinOp::Eq,
             Neq => {
                 let exp = egraph.add(Exp::BinOp(BinOp::Eq, [lhs, rhs]));
-                return egraph.add(Exp::Not(exp));
+                return egraph.add(Exp::UnOp(UnOp::Not, exp));
             }
             Lt => BinOp::Lt,
             Le => {
                 let lt = egraph.add(Exp::BinOp(BinOp::Lt, [lhs, rhs]));
                 let eq = egraph.add(Exp::BinOp(BinOp::Eq, [lhs, rhs]));
-                return egraph.add(Exp::BinOp(BinOp::Or, [lt, eq]));
+                (lhs, rhs) = (lt, eq);
+                BinOp::Or
             }
             Gt => {
                 (lhs, rhs) = (rhs, lhs);
@@ -105,16 +120,17 @@ impl BinOp {
                 (lhs, rhs) = (rhs, lhs);
                 let lt = egraph.add(Exp::BinOp(BinOp::Lt, [lhs, rhs]));
                 let eq = egraph.add(Exp::BinOp(BinOp::Eq, [lhs, rhs]));
-                return egraph.add(Exp::BinOp(BinOp::Or, [lt, eq]));
+                (lhs, rhs) = (lt, eq);
+                BinOp::Or
             }
             Plus => BinOp::Plus,
             Minus => {
-                rhs = egraph.add(Exp::Neg(rhs));
+                rhs = egraph.add(Exp::UnOp(UnOp::Neg, rhs));
                 BinOp::Plus
             }
             Mult => BinOp::Mult,
-            Div => BinOp::Div,
-            Mod => BinOp::Mod,
+            Div => todo!(),
+            Mod => todo!(),
             In => todo!(),
             PermDiv => todo!(),
             Union => todo!(),
@@ -125,5 +141,20 @@ impl BinOp {
             MagicWand => todo!(),
         };
         egraph.add(Exp::BinOp(op, [lhs, rhs]))
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UnOp {
+    Neg,
+    Not,
+}
+
+impl fmt::Display for UnOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            UnOp::Neg => write!(f, "-"),
+            UnOp::Not => write!(f, "!"),
+        }
     }
 }

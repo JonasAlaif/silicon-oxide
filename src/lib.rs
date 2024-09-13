@@ -6,3 +6,6 @@ pub mod error;
 pub mod silicon;
 pub mod pure;
 pub mod meaning;
+pub mod translate;
+pub mod log;
+pub mod declarations;

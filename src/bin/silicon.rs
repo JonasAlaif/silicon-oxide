@@ -1,49 +1,31 @@
 use std::{fs::read_to_string, io};
 
-use fxhash::FxHashMap;
-use silicon_oxide::silicon::Silicon;
-use silver_oxide::{ast, peg};
+use silicon_oxide::{declarations::{CallableDecl, Declarations}, silicon::Silicon};
+use silver_oxide::peg;
 
 fn main() -> io::Result<()> {
     for file in std::env::args().skip(1) {
-        let Ok(contents) = read_to_string(file.clone()) else {
+        let Ok(mut path) = std::path::Path::new(&file).canonicalize() else {
             continue;
         };
-        // let _ = Silver::parse(Rule::sil_program, &contents);
+        let Ok(contents) = read_to_string(&path) else {
+            continue;
+        };
+        path.set_extension("");
+        std::fs::create_dir_all(&path).unwrap();
 
-        let peg_parse = peg::silver_parser::sil_program(&contents).unwrap();
-        let declarations: FxHashMap<_, _> = peg_parse
-            .iter()
-            .flat_map(name)
-            .collect();
+        let mut peg_parse = peg::silver_parser::sil_program(&contents).unwrap();
+        silver_oxide::mac::Macro::inline_macros(&mut peg_parse);
+
+        let declarations = Declarations::new(&peg_parse);
         // println!("{peg_parse:#?}");
 
-        for (_, decl) in &declarations {
-            if let silver_oxide::ast::Declaration::Method(method) = decl {
-                Silicon::verify(method, &declarations).unwrap();
+        for (_, decl) in &declarations.callable {
+            if let CallableDecl::Method(method) = decl {
+                Silicon::verify(method, &declarations, &path).unwrap();
             }
         }
     }
 
     Ok(())
-}
-
-pub fn name(decl: &ast::Declaration) -> impl Iterator<Item = (&'_ str, &'_ ast::Declaration)> + '_ {
-    let decls = match decl {
-        ast::Declaration::Import(_) => todo!(),
-        ast::Declaration::Define(_) => todo!(),
-        ast::Declaration::Domain(d) => [(d.name.0.as_str(), decl)].into_iter().chain(d.elements.iter().map(|e| {
-            match e {
-                ast::DomainElement::DomainFunction(f) =>
-                    (f.signature.name.0.as_str(), decl),
-                ast::DomainElement::Axiom(_) => todo!(),
-            }
-        })).collect(),
-        ast::Declaration::Field(f) => f.fields.iter().map(|f| (f.0.0.as_str(), decl)).collect(),
-        ast::Declaration::Function(f) => vec![(f.signature.name.0.as_str(), decl)],
-        ast::Declaration::Predicate(p) => vec![(p.signature.name.0.as_str(), decl)],
-        ast::Declaration::Method(m) => vec![(m.signature.name.0.as_str(), decl)],
-        ast::Declaration::Adt(_) => todo!(),
-    };
-    decls.into_iter()
 }

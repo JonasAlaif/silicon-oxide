@@ -1,37 +1,59 @@
-use fxhash::FxHashMap;
+use std::path::PathBuf;
 
-use crate::{error::Error, exp::{BinOp, Exp}, state::{State, TranslationMode}};
+use fxhash::FxHashMap;
+use silver_oxide::ast;
+
+use crate::{declarations::Declarations, error::Error, exp::PathCondition, state::ValueState, translate::TranslationMode};
 
 #[derive(Debug, Clone)]
 pub struct Silicon<'a> {
-    pub state: State<'a>,
+    pub value_state: ValueState,
+    pub stmt_state: StmtState<'a>,
 
-    pub pc: Vec<egg::Id>,
-
+    pub log_dir: &'a PathBuf,
     // pub method: &'a silver_oxide::ast::Method,
+}
+
+/// This represents either locally declared variables and their current values,
+/// or arguments to a function/predicate and their values. A none key means `result`.
+pub type Bindings<'a> = FxHashMap<Option<&'a ast::Ident>, egg::Id>;
+
+#[derive(Debug, Clone)]
+pub struct StmtState<'a> {
+    pub pc: PathCondition,
+    pub bindings: Bindings<'a>,
+
     pub statements: Vec<SiliconStatement<'a>>,
+    pub declarations: &'a Declarations<'a>,
 }
 
 #[derive(Debug, Clone)]
 pub enum SiliconStatement<'a> {
     Viper(&'a silver_oxide::ast::Statement),
-    ReplacePathCond(Option<egg::Id>),
+    ReplacePathCond(PathCondition),
 }
 
 impl<'a> Silicon<'a> {
     pub fn verify(
         method: &'a silver_oxide::ast::Method,
-        declarations: &'a FxHashMap<&'a str, &'a silver_oxide::ast::Declaration>
+        declarations: &'a Declarations<'a>,
+        log_dir: &'a PathBuf,
     ) -> Result<(), Error<'a>> {
         let Some(body) = &method.body else {
             return Ok(());
         };
-
-        let mut self_ = Silicon {
-            state: State::new(declarations),
-            pc: vec![],
-            // method,
+        let value_state = ValueState::new();
+        let pc = PathCondition::new(&value_state.egraph);
+        let stmt_state = StmtState {
+            pc,
+            bindings: Default::default(),
             statements: body.statements.iter().rev().map(SiliconStatement::Viper).collect(),
+            declarations,
+        };
+        let mut self_ = Silicon {
+            value_state,
+            stmt_state,
+            log_dir,
         };
         for arg in method.signature.args.iter() {
             self_.new_arg(arg);
@@ -39,40 +61,36 @@ impl<'a> Silicon<'a> {
         for ret in method.signature.ret.iter() {
             self_.new_arg(ret);
         }
-        for pre in method.contract.preconditions.iter() {
-            let e = self_.state.inhale(pre, "precondition", &self_.pc);
-
-            // println!("{:#?}", self.state.heap);
-            // self_.state.egraph.egraph.dot().with_config_line("ranksep=2.5").to_pdf(format!("./post-inhale-pre.pdf")).unwrap();
-
-            e.unwrap();
+        if let Some(pre) = &method.contract.precondition {
+            self_.inhale(pre, "precondition").unwrap();
         }
         let mut id = 0;
 
-        while let Some(stmt) = self_.statements.pop() {
-            self_.state.egraph.saturate();
-            self_.state.egraph.egraph.dot().with_config_line("ranksep=2.5").to_dot(format!("./test{id}.dot")).unwrap();
-            println!("HEAP: {:#?}", self_.state.heap);
-            println!("PATH CONDITION: {:?}", self_.pc);
-            println!("STATEMENT: {stmt:?}");
+        while let Some(stmt) = self_.stmt_state.statements.pop() {
+            self_.value_state.egraph.saturate();
+            self_.log_pure(&format!("_stmt{id}"), Some(format!("{stmt:?}")));
+            println!("HEAP: {:#?}", self_.value_state.heap);
+            println!("PATH CONDITION: {:?}", self_.stmt_state.pc);
+            println!("STATEMENT {id}: {stmt:?}");
             self_.execute(stmt).unwrap();
             println!();
             id += 1;
         }
 
-        self_.state.egraph.egraph.dot().with_config_line("ranksep=2.5").to_dot(format!("./test99_post.dot")).unwrap();
-        println!("HEAP: {:#?}", self_.state.heap);
-        for post in method.contract.postconditions.iter() {
-            self_.state.assert(post, &self_.pc).unwrap()
+        self_.log_pure("post", None);
+        println!("HEAP: {:#?}", self_.value_state.heap);
+        if let Some(post) = &method.contract.postcondition {
+            self_.exhale(post).unwrap();
         }
         Ok(())
     }
 
-    fn new_arg(&mut self, arg: &silver_oxide::ast::ArgOrType) {
+    fn new_arg(&mut self, arg: &'a silver_oxide::ast::ArgOrType) {
         let silver_oxide::ast::ArgOrType::Arg((ident, _)) = arg else {
             return;
         };
-        self.state.new_binding(ident);
+        let id = self.value_state.egraph.next_symbolic_value(Some(ident.0.clone()));
+        self.stmt_state.bindings.insert(Some(ident), id);
     }
 
     fn execute(&mut self, stmt: SiliconStatement<'a>) -> Result<(), Error<'a>> {
@@ -80,105 +98,111 @@ impl<'a> Silicon<'a> {
         let stmt = match stmt {
             SiliconStatement::Viper(stmt) => stmt,
             SiliconStatement::ReplacePathCond(r) => {
-                self.pc.pop();
-                if let Some(r) = r {
-                    self.pc.push(r);
-                }
+                self.stmt_state.pc = r;
                 return Ok(());
             }
         };
         match stmt {
             Assign(targets, exp) => {
-                let new_value = self.state.translate(exp, TranslationMode::Expression, &self.pc).unwrap();
+                let new_value = self.translate_exp(exp).unwrap();
                 assert_eq!(targets.len(), 1);
                 let target = &targets[0];
                 match target {
                     silver_oxide::ast::Exp::Ident(ident) => {
-                        self.state.bindings.insert(ident.clone(), new_value);
+                        self.stmt_state.bindings.insert(Some(ident), new_value);
                     }
                     silver_oxide::ast::Exp::Field(r, field) => {
-                        let resource = self.state.translate_field_target(r, field, &self.pc).unwrap();
-                        self.state.heap
-                            .update_symbolic_value(&mut self.state.egraph, resource, new_value, &self.pc)
-                            .map_err(|_| Error::missing_write_permission(r, field)).unwrap();
+                        let translator = self.stmt_state.translator(TranslationMode::Expression);
+                        let resource = translator.translate_field_target(r, field, &mut self.value_state).unwrap();
+                        self.value_state.heap
+                            .update_symbolic_value(&mut self.value_state.egraph, resource, new_value, self.stmt_state.pc)
+                            .map_err(|kind| Error::expression(target, kind)).unwrap();
                     }
                     _ => todo!("{target:?}"),
                 }
             }
             If(cond, then, elseif, else_) => {
-                let cond = self.state.translate(cond, TranslationMode::Expression, &self.pc).unwrap();
-                let mut curr_cond = self.state.egraph.add(Exp::Not(cond));
+                let cond = self.translate_exp_pc(cond, self.stmt_state.pc).unwrap();
+                let pc = self.stmt_state.pc.add(&mut self.value_state.egraph, cond);
+                let mut curr_cond = self.stmt_state.pc.add_negate(&mut self.value_state.egraph, cond);
 
                 let conditions: Vec<_> = elseif.iter()
                     .map(|(cond, block)| {
-                        let cond = self.state.translate(cond, TranslationMode::Expression, &self.pc).unwrap();
-                        let pc = self.state.egraph.add(Exp::BinOp(BinOp::And, [curr_cond, cond]));
-                        let neg_cond = self.state.egraph.add(Exp::Not(cond));
-                        curr_cond = self.state.egraph.add(Exp::BinOp(BinOp::And, [curr_cond, neg_cond]));
+                        let cond = self.translate_exp_pc(cond, curr_cond).unwrap();
+                        let pc = curr_cond.add(&mut self.value_state.egraph, cond);
+                        curr_cond = curr_cond.add_negate(&mut self.value_state.egraph, cond);
                         (pc, block)
                     })
                     .collect();
 
-                self.statements.push(SiliconStatement::ReplacePathCond(None));
+                self.stmt_state.statements.push(SiliconStatement::ReplacePathCond(self.stmt_state.pc));
                 if let Some(else_) = else_ {
-                    self.statements.extend(else_.statements.iter().rev().map(SiliconStatement::Viper));
-                    self.statements.push(SiliconStatement::ReplacePathCond(Some(curr_cond)));
+                    self.stmt_state.statements.extend(else_.statements.iter().rev().map(SiliconStatement::Viper));
+                    self.stmt_state.statements.push(SiliconStatement::ReplacePathCond(curr_cond));
                 }
                 for (cond, block) in conditions.into_iter().rev() {
-                    self.statements.extend(block.statements.iter().rev().map(SiliconStatement::Viper));
-                    self.statements.push(SiliconStatement::ReplacePathCond(Some(cond)));
+                    self.stmt_state.statements.extend(block.statements.iter().rev().map(SiliconStatement::Viper));
+                    self.stmt_state.statements.push(SiliconStatement::ReplacePathCond(cond));
                 }
-                self.statements.extend(then.statements.iter().rev().map(SiliconStatement::Viper));
-                self.pc.push(cond);
-
-                // let cond = self.state.translate(cond, TranslationMode::Expression, &self.pc).unwrap();
-                // let mut next = self.clone();
-                // self.state.egraph.assume(cond, "path condition");
-                // self.statements = self.statements.iter().copied().chain(then.statements.iter().rev()).collect();
-
-                // let mut prev_cond = next.state.egraph.add(Exp::Not(cond));
-                // let mut self_ = vec![next];
-                // for (cond, then) in elseif {
-                //     let curr = self_.last_mut().unwrap();
-                //     let cond = curr.state.translate(cond, TranslationMode::Expression, &self.pc).unwrap();
-                //     let mut next = curr.clone();
-
-                //     let path_cond = curr.state.egraph.add(Exp::BinOp(BinOp::And, [prev_cond, cond]));
-                //     curr.state.egraph.assume(path_cond, "path condition");
-                //     curr.statements = curr.statements.iter().copied().chain(then.statements.iter().rev()).collect();
-
-                //     let neg_cond = next.state.egraph.add(Exp::Not(cond));
-                //     prev_cond = next.state.egraph.add(Exp::BinOp(BinOp::And, [prev_cond, neg_cond]));
-                //     self_.push(next);
-                // }
-
-                // let curr = self_.last_mut().unwrap();
-                // curr.state.egraph.assume(prev_cond, "path condition");
-                // if let Some(else_) = else_ {
-                //     curr.statements = curr.statements.iter().copied().chain(else_.statements.iter().rev()).collect();
-                // }
-                // return Ok(self_)
+                self.stmt_state.statements.extend(then.statements.iter().rev().map(SiliconStatement::Viper));
+                self.stmt_state.pc = pc;
             }
             Assume(exp) => {
-                self.state.assume(exp, "assume", &self.pc).unwrap();
+                self.assume(exp).unwrap();
             }
             Inhale(exp) => {
-                self.state.inhale(exp, "inhale", &self.pc).unwrap();
+                self.inhale(exp, "inhale").unwrap();
             }
             Assert(exp) => {
-                self.state.assert(exp, &self.pc).unwrap();
+                self.assert(exp).unwrap();
             }
             Exhale(exp) => {
-                let e = self.state.exhale(exp, &self.pc);
+                self.exhale(exp).unwrap();
 
-                println!("{:#?}", self.state.heap);
-                // self.state.egraph.egraph.dot().to_pdf(format!("./post-exhale.pdf")).unwrap();
-                // println!("{:#?}", self.state.egraph.egraph);
+                // println!("{:#?}", self.value_state.heap);
+                // // self.value_state.egraph.egraph.dot().to_pdf(format!("./post-exhale.pdf")).unwrap();
+                // // println!("{:#?}", self.value_state.egraph.egraph);
 
-                e.unwrap();
+                // e.unwrap();
+            }
+            Fold(exp) => {
+                self.state.fold(exp, self.stmt_state.pc).unwrap();
+            }
+            Unfold(exp) => {
+                self.state.unfold(exp, self.stmt_state.pc).unwrap();
             }
             _ => todo!("{stmt:?}"),
         }
         Ok(())
+    }
+
+    fn inhale(&mut self, exp: &'a ast::Exp, reason: &str) -> Result<(), Error<'a>> {
+        let exp = self.translate_for_inhale(exp)?;
+        self.assume_fact(exp.expression, reason);
+        Ok(())
+    }
+    fn assume(&mut self, exp: &'a ast::Exp) -> Result<(), Error<'a>> {
+        let exp = self.translate_for_fact(exp)?;
+        self.assume_fact(exp.expression, "assume");
+        Ok(())
+    }
+    fn assume_fact(&mut self, exp: egg::Id, reason: impl Into<egg::Symbol>) {
+        self.stmt_state.pc.assume(&mut self.value_state.egraph, exp, reason);
+    }
+
+    fn exhale(&mut self, exp: &'a ast::Exp) -> Result<(), Error<'a>> {
+        let e = self.translate_for_exhale(exp)?;
+        self.assert_fact(e.expression, exp)
+    }
+    fn assert(&mut self, exp: &'a ast::Exp) -> Result<(), Error<'a>> {
+        let e = self.translate_for_fact(exp)?;
+        self.assert_fact(e.expression, exp)
+    }
+    fn assert_fact(&mut self, exp: egg::Id, e: &'a ast::Exp) -> Result<(), Error<'a>> {
+        self.stmt_state.pc.assert(&mut self.value_state.egraph, exp).map_err(|assertion| {
+            let label = Some(format!("{}", self.value_state.egraph.normalise(assertion)));
+            self.log_pure("exhale", label);
+            Error::exhale(e, assertion)
+        })
     }
 }

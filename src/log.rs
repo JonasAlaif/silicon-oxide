@@ -2,24 +2,25 @@ use std::path::PathBuf;
 
 use num_bigint::BigInt;
 
-use crate::{declarations::Declarations, exp::{BinOp, Exp, PathCondition}, meaning::Constant, pure::EGraph, silicon::Silicon, state::ValueState};
+use crate::{exp::{BinOp, Exp, PathCondition, UnOp}, meaning::Constant, pure::EGraph, silicon::Silicon};
 
-impl<'e> Silicon<'e> {
-    pub fn log_pure(&mut self, file_name: &str, label: Option<String>) {
-        let mut path = self.log_dir.join(file_name);
-        let heap = self.dot_subgraph();
-
-        let mut egraph = self.value_state.egraph.egraph.clone();
+impl EGraph {
+    pub fn dot(&self, mut path: PathBuf, header: Option<String>, footer: Option<String>) {
+        let mut egraph = self.egraph.clone();
         for class in egraph.classes_mut() {
             class.nodes.retain(|node| {
-                node.log(&self.value_state.egraph)
+                node.log(class.id, self)
             });
         }
         let mut dot = egraph.dot().with_config_line("ranksep=2.5").to_string();
-        dot = dot.replacen("digraph egraph {\n", &format!("digraph egraph {{\n  {heap}"), 1);
-        if let Some(label) = label {
-            dot = dot.replacen("\n}", &format!("\n  label=\"{}\"\n}}", label.replace('"', "\\\"")), 1);
+
+        if let Some(header) = header {
+            dot = dot.replacen("digraph egraph {\n", &format!("digraph egraph {{\n  {header}"), 1);
         }
+        if let Some(footer) = footer {
+            dot = dot.replacen("\n}", &format!("\n  {footer}\n}}"), 1);
+        }
+
         for class in egraph.classes() {
             let Some(data) = &class.data else {
                 continue;
@@ -44,16 +45,26 @@ impl<'e> Silicon<'e> {
         write!(stdin, "{dot}").unwrap();
         assert_eq!(child.wait().unwrap().code(), Some(0));
     }
+}
+
+impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
+    pub fn log_pure(&mut self, file_name: &str, label: Option<String>) {
+        let path = self.log_dir.join(file_name);
+        let heap = self.dot_subgraph();
+
+        let label = label.map(|label| format!("label=\"{}\"", label.replace('"', "\\\"")));
+        self.value_state.egraph.dot(path, Some(heap), label);
+    }
 
     fn dot_subgraph(&mut self) -> String {
         let mut nodes = Vec::<String>::new();
         let mut edges = Vec::<String>::new();
 
         for (var, value) in self.stmt_state.bindings.iter() {
-            let var = var.unwrap();
+            let var = var.as_ref().map(|v| v.0.as_str()).unwrap_or("result");
             let value = self.value_state.egraph.normalise(*value);
-            nodes.push(format!("{}[label = \"{} := #{value}\"]", var.0, var.0));
-            edges.push(format!("{}:se -> {value}.0 [lhead = cluster_{value}, ]", var.0));
+            nodes.push(format!("{var}[label = \"{var} := #{value}\"]"));
+            edges.push(format!("{var}:se -> {value}.0 [lhead = cluster_{value}, ]"));
         }
 
         let condition = PathCondition::new(&self.value_state.egraph);
@@ -85,18 +96,36 @@ impl<'e> Silicon<'e> {
 }
 
 impl Exp {
-    pub fn log(&self, egraph: &EGraph) -> bool {
+    pub fn log(&self, id: egg::Id, egraph: &EGraph) -> bool {
+        let is_bool_constant = |id: &egg::Id| egraph.egraph[*id].data.as_ref().is_some_and(|data|
+            matches!(data, Constant::Bool(..))
+        );
+        let is_rational_constant = |id: &egg::Id| egraph.egraph[*id].data.as_ref().is_some_and(|data|
+            matches!(data, Constant::Rational(..))
+        );
         match self {
             Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Lt | BinOp::Eq, [a, b]) if egraph.ids_equal(*a, *b) => false,
-            Exp::BinOp(BinOp::Lt | BinOp::Eq, [a, b]) if egraph.egraph[*a].data.is_some() && egraph.egraph[*b].data.is_some() => false,
-            Exp::Ternary([c, _, _]) if egraph.egraph[*c].data.is_some() => false,
+
+            Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Eq, [a, b])
+                if is_bool_constant(a) && is_bool_constant(b) => false,
+            Exp::UnOp(UnOp::Not, a) if is_bool_constant(a) => false,
+            Exp::Ternary([c, _, _]) if is_bool_constant(c) => false,
+
+            Exp::BinOp(BinOp::Eq | BinOp::Lt | BinOp::Plus | BinOp::Mult | BinOp::Div | BinOp::Mod, [a, b])
+                if is_rational_constant(a) && is_rational_constant(b) => false,
+            Exp::UnOp(UnOp::Neg, a) if is_rational_constant(a) => false,
+
             Exp::BinOp(BinOp::Or, [a, b]) if egraph.is_true(*a) || egraph.is_true(*b) => false,
             Exp::BinOp(BinOp::And, [a, b]) if egraph.is_false(*a) || egraph.is_false(*b) => false,
+
+            Exp::BinOp(BinOp::And, [a, b]) if egraph.ids_equal(id, *a) && egraph.is_true(*b) => false,
+            Exp::BinOp(BinOp::Or, [a, b]) if egraph.ids_equal(id, *a) && egraph.is_false(*b) => false,
 
             Exp::BinOp(BinOp::Mult | BinOp::Plus | BinOp::And | BinOp::Or | BinOp::Eq, [a, b]) if egraph.normalise(*a) < egraph.normalise(*b) => false,
             Exp::BinOp(BinOp::Mult | BinOp::Div, [_, b]) if egraph.is_number(*b, BigInt::from(1u8)) => false,
             Exp::BinOp(BinOp::Mult, [a, _]) if egraph.is_number(*a, BigInt::from(1u8)) => false,
             Exp::BinOp(BinOp::Plus, [a, b]) if egraph.is_number(*a, BigInt::from(0u8)) || egraph.is_number(*b, BigInt::from(0u8)) => false,
+            Exp::BinOp(BinOp::Div, [a, _]) if egraph.is_number(*a, BigInt::from(0u8)) => false,
             _ => true,
         }
     }

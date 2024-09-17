@@ -1,14 +1,14 @@
 use silver_oxide::ast;
 
-use crate::{declarations::{CallableDecl, Declarations}, error::Error, exp::{BinOp, Exp, PathCondition, Snapshot, UnOp}, heap::Mutation, pure::EGraph, silicon::{Bindings, Silicon, StmtState}, state::ValueState};
+use crate::{declarations::{CallableDecl, Declarations}, error::Error, exp::{BinOp, Exp, PathCondition, UnOp}, heap::{Mutation, PermissionConfig, Temporary}, pure::EGraph, silicon::{Bindings, Silicon, StmtState}, state::ValueState};
 
-impl<'e> StmtState<'e> {
-    pub fn translator(&self, mode: TranslationMode) -> Translator<'_, 'e> {
+impl<'a, 'e, F, M> StmtState<'a, 'e, F, M> {
+    pub fn translator(&self, mode: TranslationMode) -> Translator<'_, 'e, F, M> {
         Translator::new(self.pc, mode, &self.bindings, self.declarations)
     }
 }
 
-impl<'e> Silicon<'e> {
+impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
     pub fn translate_for_inhale(&mut self, exp: &'e ast::Exp) -> Result<TranslationResult, Error<'e>> {
         let assert_snapshot = self.value_state.egraph.next_symbolic_value(None);
         let translator = self.stmt_state.translator(TranslationMode::Inhale)
@@ -27,6 +27,19 @@ impl<'e> Silicon<'e> {
         translator.translate(exp, &mut self.value_state)
     }
 
+    pub fn translate_for_unfold(&mut self, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
+        let mutation = self.value_state.mutation_id();
+        let translator = self.stmt_state.translator(TranslationMode::Exhale)
+            .set_mutation(mutation);
+        translator.unfold_predicate(exp, &mut self.value_state)
+    }
+    pub fn translate_for_fold(&mut self, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
+        let mutation = self.value_state.mutation_id();
+        let translator = self.stmt_state.translator(TranslationMode::Exhale)
+            .set_mutation(mutation);
+        translator.fold_predicate(exp, &mut self.value_state)
+    }
+
     pub fn translate_exp(&mut self, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
         let translator = self.stmt_state.translator(TranslationMode::Expression);
         Ok(translator.translate(exp, &mut self.value_state)?.expression)
@@ -38,15 +51,16 @@ impl<'e> Silicon<'e> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Translator<'a, 'e> {
+#[derive(Debug)]
+pub struct Translator<'a, 'e, F, M> {
     pc: PathCondition,
     mode: TranslationMode,
     binds: &'a Bindings<'e>,
-    decls: &'e Declarations<'e>,
+    decls: &'a Declarations<'e, F, M>,
     /// Used to mark changes in permission amounts in the heap to figure out
     /// what was mutating in the current translation.
     mutation: Option<Mutation>,
+    temporary: Option<Temporary>,
     /// The generated expression will encode equality to this snapshot, useful
     /// for inhaling a predicate body.
     assert_snapshot: Option<egg::Id>,
@@ -54,9 +68,16 @@ pub struct Translator<'a, 'e> {
     perm_mult: Option<egg::Id>,
 }
 
-impl<'a, 'e> Translator<'a, 'e> {
-    pub fn new(pc: PathCondition, mode: TranslationMode, binds: &'a Bindings<'e>, decls: &'e Declarations<'e>) -> Self {
-        Self { pc, mode, binds, decls, mutation: None, assert_snapshot: None, perm_mult: None }
+impl<F, M> Copy for Translator<'_, '_, F, M> {}
+impl<F, M> Clone for Translator<'_, '_, F, M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
+    pub fn new(pc: PathCondition, mode: TranslationMode, binds: &'a Bindings<'e>, decls: &'a Declarations<'e, F, M>) -> Self {
+        Self { pc, mode, binds, decls, mutation: None, temporary: None, assert_snapshot: None, perm_mult: None }
     }
     pub fn set_mutation(self, mutation: Mutation) -> Self {
         Self { mutation: Some(mutation), ..self }
@@ -80,6 +101,16 @@ impl<'a, 'e> Translator<'a, 'e> {
         let pc = self.pc.add_negate(egraph, condition);
         Self { pc, ..self }
     }
+    pub fn with_params(self, params: &'a Bindings<'e>) -> Self {
+        Self { binds: params, ..self }
+    }
+    pub fn temporary_up(self) -> Self {
+        let temporary = Some((true, self.temporary.map(|(_, t)| t + 1).unwrap_or_default()));
+        Self { temporary, ..self }
+    }
+    pub fn temporary_down(self) -> Self {
+        Self { temporary: Some((false, self.temporary.unwrap().1)), ..self }
+    }
 
     fn next_assert_snapshot(self, egraph: &mut EGraph, translation_state: &mut TranslationState) -> Option<egg::Id> {
         self.assert_snapshot.map(|snap| {
@@ -102,7 +133,7 @@ pub struct TranslationResult {
     pub(super) snapshot: egg::Id,
 }
 
-impl<'a, 'e> Translator<'a, 'e> {
+impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
     pub fn translate(self, exp: &'e ast::Exp, value_state: &mut ValueState) -> Result<TranslationResult, Error<'e>> {
         let mut translation_state = TranslationState::default();
         let expression = self.t_inner(exp, value_state, &mut translation_state)?;
@@ -153,8 +184,8 @@ impl<'a, 'e> Translator<'a, 'e> {
             FuncApp(name, args) => {
                 let declaration = self.decls.callable.get(name).ok_or_else(|| Error::undeclared_function(name))?;
                 match declaration {
-                    CallableDecl::Function(fun) => {
-                        let (args, mut params) = self.translate_params(args, &fun.signature.args, value_state)?;
+                    CallableDecl::Function(fun, _) => {
+                        let (mut args, mut params) = self.translate_params(args, &fun.signature.args, value_state)?;
                         if let Some(pre) = &fun.contract.precondition {
                             // TODO: which `pc`` to use here?
                             let translator = Translator::new(self.pc, TranslationMode::Fact, &params, self.decls);
@@ -162,6 +193,7 @@ impl<'a, 'e> Translator<'a, 'e> {
                             self.pc.assert(&mut value_state.egraph, pre.expression).map_err(|assertion|
                                 Error::function_precondition(exp, assertion)
                             )?;
+                            args.push(pre.snapshot);
                         }
 
                         let result = value_state.egraph.add(Exp::FuncApp(name.clone(), args));
@@ -187,7 +219,8 @@ impl<'a, 'e> Translator<'a, 'e> {
                     CallableDecl::Predicate(_pred) => {
                         self.mode.assert_expression(false, exp)?;
                         let loc = self.translate_predicate_target(name, args, value_state)?;
-                        return self.translate_acc_exp(loc, value_state.egraph.write(), false, value_state, translation_state, exp)
+                        let perm = self.translate_permission(None, value_state)?;
+                        return self.translate_acc_exp(loc, perm, false, value_state, translation_state, exp)
                     }
                     // TODO: domain functions
                     _ => todo!(),
@@ -195,10 +228,7 @@ impl<'a, 'e> Translator<'a, 'e> {
             }
             Acc(acc) => {
                 self.mode.assert_expression(false, exp)?;
-                let perm = acc.perm.as_ref()
-                    .map(|perm| self.t_inner_as_exp(perm, value_state))
-                    .transpose()?
-                    .unwrap_or(value_state.egraph.write());
+                let perm = self.translate_permission(acc.perm.as_ref(), value_state)?;
                 let (loc, bound) = match &acc.acc.loc {
                     ast::Exp::FuncApp(name, args) => {
                         let loc = self.translate_predicate_target(name, args, value_state)?;
@@ -214,9 +244,15 @@ impl<'a, 'e> Translator<'a, 'e> {
             }
             Unfolding(acc, exp) => {
                 let (body, params, loc, perm) = self.extract_predicate(acc, value_state)?;
-                self.unfold_inner(body, &params, loc, perm, value_state)?;
-                let exp = self.t_inner_as_exp(exp, value_state)?;
-                self.fold_inner(body, &params, loc, perm, value_state)?;
+                let self_ = self.temporary_up();
+                let body = self_.unfold_inner(acc, body, &params, loc, perm, value_state)?;
+                self.pc.assume(&mut value_state.egraph, body, "unfolding predicate body");
+                let exp = self_.t_inner_as_exp(exp, value_state)?;
+
+                let self_ = self_.temporary_down();
+                let tmp = self_.temporary.unwrap().1;
+                value_state.heap.kill_temporary(tmp);
+                // self_.fold_inner(acc, body, &params, loc, perm, value_state)?;
                 return Ok(exp);
             }
             _ => todo!("{exp:?}"),
@@ -279,24 +315,34 @@ impl<'a, 'e> Translator<'a, 'e> {
         Ok(value_state.egraph.add(Exp::PredicateApp(field.clone(), vec![recv])))
     }
 
-    pub(super) fn translate_acc_exp(self, loc: egg::Id, perm: egg::Id, bound: bool, value_state: &mut ValueState, translation_state: &mut TranslationState, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
-        let perm = self.perm_mult
-            .map(|perm_mult| value_state.egraph.add(Exp::BinOp(BinOp::Mult, [perm, perm_mult])))
-            .unwrap_or(perm);
+    fn permission_config<T: Copy>(self, t: impl FnOnce() -> T) -> PermissionConfig<T> {
+        if let Some(temporary) = self.temporary {
+            PermissionConfig::Temporary {
+                temporary,
+                mutation: self.mutation,
+            }
+        } else {
+            PermissionConfig::Mutation(t())
+        }
+    }
+    pub(super) fn translate_acc_exp(self, loc: egg::Id, perm: Option<egg::Id>, bound: bool, value_state: &mut ValueState, translation_state: &mut TranslationState, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
+        let perm = perm.unwrap_or(value_state.egraph.none());
         let result;
         let snapshot = match self.mode {
             TranslationMode::Exhale => {
                 result = value_state.egraph.true_();
+                let config = self.permission_config(|| self.mutation.unwrap());
                 value_state.heap
-                    .remove_permission(&mut value_state.egraph, loc, perm, self.pc, self.mutation.unwrap())
+                    .remove_permission(&mut value_state.egraph, loc, perm, self.pc, config)
                     .map_err(|kind| Error::expression(exp, kind))
             }
             TranslationMode::Inhale => {
                 result = value_state.egraph.true_();
                 let value = self.next_assert_snapshot(&mut value_state.egraph, translation_state);
                 let bound = bound.then_some(value_state.egraph.write());
+                let config = self.permission_config(|| ());
                 value_state.heap
-                    .add_permission(&mut value_state.egraph, loc, perm, self.pc, value, bound)
+                    .add_permission(&mut value_state.egraph, loc, perm, self.pc, value, bound, config)
                     .map_err(|kind| Error::expression(exp, kind))
             }
             TranslationMode::Fact => {
@@ -377,19 +423,42 @@ impl<'a, 'e> Translator<'a, 'e> {
         // return Ok(self.egraph.add_binop(*op, lhs, rhs))
     }
 
-    pub fn unfold_predicate(self, exp: &'e ast::Exp, value_state: &mut ValueState) -> Result<(), Error<'e>> {
+    pub fn unfold_predicate(self, exp: &'e ast::Exp, value_state: &mut ValueState) -> Result<egg::Id, Error<'e>> {
         let (body, params, loc, perm) = self.extract_predicate(exp, value_state)?;
-        self.unfold_inner(body, &params, loc, perm, value_state)
+        self.unfold_inner(exp, body, &params, loc, perm, value_state)
     }
-    fn unfold_inner(self, body: &'e ast::Exp, params: &Bindings<'e>, loc: egg::Id, perm: Option<egg::Id>, value_state: &mut ValueState) -> Result<(), Error<'e>> {
-        todo!()
+    fn unfold_inner(self, exp: &'e ast::Exp, body: &'e ast::Exp, params: &Bindings<'e>, _loc: egg::Id, perm: Option<egg::Id>, value_state: &mut ValueState) -> Result<egg::Id, Error<'e>> {
+        // Exhale
+        let translator_in = self.with_mode(TranslationMode::Exhale);
+        let mut ts = TranslationState::default();
+        let _snap_in = translator_in.t_inner(exp, value_state, &mut ts)?;
+        assert_eq!(ts.collect_snapshot.len(), 1);
+        // Inhale
+        let translator_out = self.with_mode(TranslationMode::Inhale)
+            .with_params(params)
+            .set_perm_mult(perm)
+            .set_assert_snapshot(ts.collect_snapshot[0]);
+        let output = translator_out.translate(body, value_state)?;
+        Ok(output.expression)
     }
-    pub fn fold_predicate(self, exp: &'e ast::Exp, value_state: &mut ValueState) -> Result<(), Error<'e>> {
+    pub fn fold_predicate(self, exp: &'e ast::Exp, value_state: &mut ValueState) -> Result<egg::Id, Error<'e>> {
         let (body, params, loc, perm) = self.extract_predicate(exp, value_state)?;
-        self.fold_inner(body, &params, loc, perm, value_state)
+        self.fold_inner(exp, body, &params, loc, perm, value_state)
     }
-    fn fold_inner(self, body: &'e ast::Exp, params: &Bindings<'e>, loc: egg::Id, perm: Option<egg::Id>, value_state: &mut ValueState) -> Result<(), Error<'e>> {
-        todo!()
+    fn fold_inner(self, exp: &'e ast::Exp, body: &'e ast::Exp, params: &Bindings<'e>, _loc: egg::Id, perm: Option<egg::Id>, value_state: &mut ValueState) -> Result<egg::Id, Error<'e>> {
+        // Exhale
+        let translator_in = self.with_mode(TranslationMode::Exhale)
+            .with_params(params)
+            .set_perm_mult(perm);
+        let snap_in = translator_in.translate(body, value_state)?;
+        // Inhale
+        let translator_out = self.with_mode(TranslationMode::Inhale)
+            .set_assert_snapshot(snap_in.snapshot);
+        let mut ts = TranslationState::default();
+        let _snap_out = translator_out.t_inner(exp, value_state, &mut ts)?;
+        assert_eq!(ts.collect_snapshot.len(), 1);
+        value_state.egraph.equate(snap_in.snapshot, ts.collect_snapshot[0], "fold");
+        Ok(snap_in.expression)
     }
 
     fn extract_predicate(self, exp: &'e ast::Exp, value_state: &mut ValueState) -> Result<(&'e ast::Exp, Bindings<'e>, egg::Id, Option<egg::Id>), Error<'e>> {
@@ -412,8 +481,21 @@ impl<'a, 'e> Translator<'a, 'e> {
         };
         let (args, params) = self.translate_params(args, &predicate.signature.args, value_state)?;
         let loc = value_state.egraph.add(Exp::PredicateApp(name.clone(), args));
-        let perm = perm.map(|perm| self.t_inner_as_exp(perm, value_state)).transpose()?;
+        let perm = self.translate_permission(perm, value_state)?;
         Ok((body, params, loc, perm))
+    }
+
+    fn translate_permission(self, perm: Option<&'e ast::Exp>, value_state: &mut ValueState) -> Result<Option<egg::Id>, Error<'e>> {
+        let perm = perm.as_ref()
+            .map(|perm| self.t_inner_as_exp(perm, value_state))
+            .transpose()?;
+        match (perm, self.perm_mult) {
+            (Some(perm), Some(perm_mult)) =>
+                Ok(Some(value_state.egraph.add(Exp::BinOp(BinOp::Mult, [perm, perm_mult])))),
+            (Some(perm), None) => Ok(Some(perm)),
+            (None, Some(perm_mult)) => Ok(Some(perm_mult)),
+            (None, None) => Ok(None),
+        }
     }
 }
 

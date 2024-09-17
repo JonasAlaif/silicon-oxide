@@ -39,7 +39,7 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
             egg::multi_rewrite!("or-is-false"; "?v1 = false, ?v1 = (|| ?a ?b)" => "?a = false, ?b = false"),
             egg::multi_rewrite!("eq-true"; "?v1 = true, ?v1 = (eq ?a ?b)" => "?a = ?b"),
 
-            egg::multi_rewrite!("snap-pair-eq"; "?v1 = ($ ?a ?b), ?v1 = ($ ?c ?d)" => "?a = ?c, ?b = ?d"),
+            // egg::multi_rewrite!("snap-pair-eq"; "?v1 = ($ ?a ?b), ?v1 = ($ ?c ?d)" => "?a = ?c, ?b = ?d"),
 
             // egg::multi_rewrite!("rewrite-ternary"; "?v1 = (? ?a ?b ?c)" => "?v1 = (&& ?y ?x), ?v2 = (|| ?y ?x)" if definitely_unequal("?v1", "?c")),
             // egg::rewrite!("ternary"; "(?a (? ?b ?c ?d) (? ?b ?e ?f))" => "(? ?b (?a ?c ?e) (?a ?d ?f))"),
@@ -103,6 +103,7 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
             egg::rewrite!("divide-unit"; "(/ ?a 1)" => "?a"),
             egg::rewrite!("multiply-unit"; "(* ?a 1)" => "?a"),
             egg::rewrite!("multiply-zero"; "(* ?a 0)" => "0"),
+            egg::rewrite!("zero-divide"; "(/ 0 ?a)" => "0"),
             egg::rewrite!("multiply-neg"; "(* ?a (- ?b))" => "(* (- ?a) ?b)"),
             egg::rewrite!("div-neg-a"; "(/ ?a (- ?b))" => "(/ (- ?a) ?b)"),
             egg::rewrite!("div-neg-b"; "(/ (- ?a) ?b)" => "(/ ?a (- ?b))"),

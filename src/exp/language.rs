@@ -5,7 +5,7 @@ use crate::{error::Error, pure::EGraph};
 pub type Snapshot = egg::Id;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Exp {
+pub enum ExpG<T> {
     Const(silver_oxide::ast::Const),
     // Result,
     // Old(Option<Ident>, Box<Exp>),
@@ -25,28 +25,57 @@ pub enum Exp {
     // LetIn(Ident, Box<Exp>, Box<Exp>),
     // ForPerm(Vec<(Ident, Type)>, Box<ResAccess>, Box<Exp>),
     // Acc(Box<AccExp>),
-    FuncApp(silver_oxide::ast::Ident, Vec<egg::Id>),
+    FuncApp(silver_oxide::ast::Ident, Vec<T>),
     /// Should never have parents!
-    PredicateApp(silver_oxide::ast::Ident, Vec<egg::Id>),
+    PredicateApp(silver_oxide::ast::Ident, Vec<T>),
     SymbolicValue(SymbolicValue),
-    BinOp(BinOp, [egg::Id; 2]),
-    Ternary([egg::Id; 3]),
+    BinOp(BinOp, [T; 2]),
+    Ternary([T; 3]),
     // Field(Box<Exp>, Ident),
     // Index(Box<Exp>, Box<IndexOp>),
-    UnOp(UnOp, egg::Id),
+    UnOp(UnOp, T),
     // InhaleExhale(Box<Exp>, Box<Exp>),
-    Snapshot(Vec<egg::Id>),
-    Project(egg::Id, usize),
+    Snapshot(Vec<T>),
+    Project(T, usize),
 }
+
+pub type Exp = ExpG<egg::Id>;
+// pub struct ExpU(pub ExpG<Box<ExpU>>);
+
+// pub trait Translate<T> {
+//     fn translate(&self, egraph: &mut EGraph) -> T;
+// }
+
+// impl<T, U: Translate<T>> Translate<ExpG<T>> for ExpG<U> {
+//     fn translate(&self, egraph: &mut EGraph) -> ExpG<T> {
+//         match self {
+//             Self::Const(c) => ExpG::Const(c.clone()),
+//             Self::FuncApp(i, args) => ExpG::FuncApp(i.clone(), args.iter().map(|a| a.translate(egraph)).collect()),
+//             Self::PredicateApp(i, args) => ExpG::PredicateApp(i.clone(), args.iter().map(|a| a.translate(egraph)).collect()),
+//             Self::SymbolicValue(sv) => ExpG::SymbolicValue(sv.clone()),
+//             Self::BinOp(op, [l, r]) => ExpG::BinOp(*op, [l.translate(egraph), r.translate(egraph)]),
+//             Self::Ternary([c, t, e]) => ExpG::Ternary([c.translate(egraph), t.translate(egraph), e.translate(egraph)]),
+//             Self::UnOp(op, e) => ExpG::UnOp(*op, e.translate(egraph)),
+//             Self::Snapshot(es) => ExpG::Snapshot(es.iter().map(|e| e.translate(egraph)).collect()),
+//             Self::Project(e, i) => ExpG::Project(e.translate(egraph), *i),
+//         }
+//     }
+// }
+
+// impl<T, U: Translate<T>> Translate<T> for Box<U> {
+//     fn translate(&self, egraph: &mut EGraph) -> T {
+//         self.as_ref().translate(egraph)
+//     }
+// }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolicValue(pub u64, pub Option<String>);
 
-impl fmt::Display for Exp {
+impl<T: fmt::Display> fmt::Display for ExpG<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Exp::Const(c) => write!(f, "{c:?}"),
-            Exp::FuncApp(i, args) | Exp::PredicateApp(i, args) => {
+            Self::Const(c) => write!(f, "{c:?}"),
+            Self::FuncApp(i, args) | Self::PredicateApp(i, args) => {
                 write!(f, "{}(", i.0)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -56,12 +85,12 @@ impl fmt::Display for Exp {
                 }
                 write!(f, ")")
             }
-            Exp::SymbolicValue(SymbolicValue(sv, None)) => write!(f, "@{sv}"),
-            Exp::SymbolicValue(SymbolicValue(sv, Some(name))) => write!(f, "{name}@{sv}"),
-            Exp::BinOp(op, [l, r]) => write!(f, "(#{} {:?} #{})", l, op, r),
-            Exp::Ternary([c, t, e]) => write!(f, "(#{} ? #{} : #{})", c, t, e),
-            Exp::UnOp(op, e) => write!(f, "{op}#{}", e),
-            Exp::Snapshot(es) => {
+            Self::SymbolicValue(SymbolicValue(sv, None)) => write!(f, "@{sv}"),
+            Self::SymbolicValue(SymbolicValue(sv, Some(name))) => write!(f, "{name}@{sv}"),
+            Self::BinOp(op, [l, r]) => write!(f, "(#{} {:?} #{})", l, op, r),
+            Self::Ternary([c, t, e]) => write!(f, "(#{} ? #{} : #{})", c, t, e),
+            Self::UnOp(op, e) => write!(f, "{op}#{}", e),
+            Self::Snapshot(es) => {
                 write!(f, "snap(")?;
                 for (i, e) in es.iter().enumerate() {
                     if i > 0 {
@@ -71,7 +100,7 @@ impl fmt::Display for Exp {
                 }
                 write!(f, ")")
             }
-            Exp::Project(e, i) => write!(f, "#{e}[{i}]"),
+            Self::Project(e, i) => write!(f, "#{e}[{i}]"),
         }
     }
 }

@@ -54,7 +54,7 @@ impl PathCondition {
     pub fn condition(&self, egraph: &mut EGraph, assertion: egg::Id) -> egg::Id {
         egraph.add(Exp::BinOp(BinOp::Or, [self.negative(), assertion]))
     }
-    pub fn assert(&self, egraph: &mut EGraph, assertion: egg::Id) -> Result<(), egg::Id> {
+    pub fn assert_lite(&self, egraph: &mut EGraph, assertion: egg::Id) -> Result<(), egg::Id> {
         if egraph.is_true(assertion) {
             return Ok(());
         }
@@ -64,6 +64,26 @@ impl PathCondition {
         }
         egraph.saturate();
         egraph.is_true(assertion).then(|| ()).ok_or(assertion)
+    }
+    pub fn assert(&self, egraph: &mut EGraph, assertion: egg::Id) -> Result<(), egg::Id> {
+        let Err(assertion) = self.assert_lite(egraph, assertion) else {
+            return Ok(());
+        };
+        Err(egraph.normalise(assertion))
+        // // TODO: check how often this happens
+        // let mut egraph_branch = egraph.clone();
+        // egraph_branch.assume(self.positive(), "branch check");
+        // egraph_branch.saturate();
+        // egraph_branch.is_true(assertion).then(|| {
+        //     eprintln!("assertion only succeeded after cloning and assuming the pc!");
+        //     ()
+        // }).ok_or_else(|| {
+        //     let norm_assertion = egraph.normalise(assertion);
+        //     eprintln!("assertion FAILED after cloning and assuming the pc: {norm_assertion}");
+        //     let path_buf = "lseg/egraph_branch".parse().unwrap();
+        //     egraph_branch.dot(path_buf, None, None);
+        //     norm_assertion
+        // })
     }
 
     pub fn assume(&self, egraph: &mut EGraph, assertion: egg::Id, reason: impl Into<egg::Symbol>) {

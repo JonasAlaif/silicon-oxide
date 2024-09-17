@@ -1,6 +1,6 @@
 use std::{fs::read_to_string, io};
 
-use silicon_oxide::{declarations::{CallableDecl, Declarations}, silicon::Silicon};
+use silicon_oxide::{declarations::{CallableDecl, Declarations}, method::Method};
 use silver_oxide::peg;
 
 fn main() -> io::Result<()> {
@@ -16,15 +16,11 @@ fn main() -> io::Result<()> {
 
         let mut peg_parse = peg::silver_parser::sil_program(&contents).unwrap();
         silver_oxide::mac::Macro::inline_macros(&mut peg_parse);
-
-        let declarations = Declarations::new(&peg_parse);
         // println!("{peg_parse:#?}");
 
-        for (_, decl) in &declarations.callable {
-            if let CallableDecl::Method(method) = decl {
-                Silicon::verify(method, &declarations, &path).unwrap();
-            }
-        }
+        let decls0 = Declarations::new(&peg_parse);
+        let decls1 = decls0.verify_functions(&path);
+        let decls2 = decls1.verify_methods(&path);
     }
 
     Ok(())

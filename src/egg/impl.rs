@@ -39,13 +39,15 @@ impl Language for Exp {
     fn matches(&self, other: &Self) -> bool {
         match (self, other) {
             (Exp::Const(c1), Exp::Const(c2)) => c1 == c2,
-            (Exp::FuncApp(f1, c1), Exp::FuncApp(f2, c2)) => f1 == f2 && c1.len() == c2.len(),
+            (Exp::FuncApp(f1, c1, t1), Exp::FuncApp(f2, c2, t2)) => f1 == f2 && c1.len() == c2.len() && t1 == t2,
             (Exp::SymbolicValue(sv1), Exp::SymbolicValue(sv2)) => sv1 == sv2,
             (Exp::BinOp(op1, _), Exp::BinOp(op2, _)) => op1 == op2,
             (Exp::Ternary(_), Exp::Ternary(_)) => true,
             (Exp::UnOp(op1, _), Exp::UnOp(op2, _)) => op1 == op2,
             (Exp::Snapshot(es1), Exp::Snapshot(es2)) => es1.len() == es2.len(),
             (Exp::Project(_, i1), Exp::Project(_, i2)) => i1 == i2,
+            (Exp::Downcast(_, t1), Exp::Downcast(_, t2)) => t1 == t2,
+            (Exp::Upcast(_, t1), Exp::Upcast(_, t2)) => t1 == t2,
             _ => false,
         }
     }
@@ -53,7 +55,7 @@ impl Language for Exp {
     fn children(&self) -> &[egg::Id] {
         match self {
             Exp::Const(_) => &[],
-            Exp::FuncApp(_, children) => children,
+            Exp::FuncApp(_, children, _) => children,
             Exp::PredicateApp(_, children) => children,
             Exp::SymbolicValue(_) => &[],
             Exp::BinOp(_, children) => children,
@@ -61,13 +63,15 @@ impl Language for Exp {
             Exp::UnOp(_, children) => from_ref(children),
             Exp::Snapshot(es) => es,
             Exp::Project(e, _) => from_ref(e),
+            Exp::Downcast(e, _) => from_ref(e),
+            Exp::Upcast(e, _) => from_ref(e),
         }
     }
 
     fn children_mut(&mut self) -> &mut [egg::Id] {
         match self {
             Exp::Const(_) => &mut [],
-            Exp::FuncApp(_, children) => children,
+            Exp::FuncApp(_, children, _) => children,
             Exp::PredicateApp(_, children) => children,
             Exp::SymbolicValue(_) => &mut [],
             Exp::BinOp(_, children) => children,
@@ -75,6 +79,8 @@ impl Language for Exp {
             Exp::UnOp(_, children) => from_mut(children),
             Exp::Snapshot(es) => es,
             Exp::Project(e, _) => from_mut(e),
+            Exp::Downcast(e, _) => from_mut(e),
+            Exp::Upcast(e, _) => from_mut(e),
         }
     }
 }

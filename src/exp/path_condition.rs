@@ -69,6 +69,9 @@ impl PathCondition {
         let Err(assertion) = self.assert_lite(egraph, assertion) else {
             return Ok(());
         };
+        // if egraph.z3_assert(assertion) {
+        //     return Ok(());
+        // }
         Err(egraph.normalise(assertion))
         // // TODO: check how often this happens
         // let mut egraph_branch = egraph.clone();

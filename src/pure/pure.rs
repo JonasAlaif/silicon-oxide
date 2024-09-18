@@ -1,6 +1,8 @@
-use crate::{egg::rules, exp::{BinOp, Exp, SymbolicValue}, meaning::{Constant, Meaning}};
+use crate::{egg::rules, exp::{BinOp, Exp, SymbolicValue}, pure::{Ty, Meaning}};
 
-pub type EClass = egg::EClass<Exp, Option<Constant>>;
+use super::TyKind;
+
+pub type EClass = egg::EClass<Exp, Ty>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Constants {
@@ -56,17 +58,14 @@ impl EGraph {
     pub fn write(&self) -> egg::Id {
         self.constants.write
     }
-    pub fn next_symbolic_value(&mut self, name: Option<String>) -> egg::Id {
-        let id = self.egraph.add(Exp::SymbolicValue(SymbolicValue(self.next_symbolic_value, name)));
+    pub fn next_symbolic_value(&mut self, name: Option<String>, ty: TyKind) -> egg::Id {
+        let id = self.egraph.add(Exp::SymbolicValue(SymbolicValue(self.next_symbolic_value, name, ty)));
         self.next_symbolic_value += 1;
         id
     }
 
-    pub fn has_inconsistency(&self) -> Option<&EClass> {
-        self.egraph.classes().find(|class| class.data == Some(Constant::Inconsistent))
-    }
     pub fn has_type_error(&self) -> Option<&EClass> {
-        self.egraph.classes().find(|class| class.data == Some(Constant::TypeError))
+        self.egraph.classes().find(|class| class.data.is_error())
     }
 
     pub fn add(&mut self, exp: Exp) -> egg::Id {
@@ -118,9 +117,9 @@ impl EGraph {
     }
 
     pub fn is_true(&self, exp: egg::Id) -> bool {
-        self.egraph[exp].data == Some(Constant::Bool(true))
+        self.egraph[exp].data == Ty::Bool(Some(true))
     }
     pub fn is_false(&self, exp: egg::Id) -> bool {
-        self.egraph[exp].data == Some(Constant::Bool(false))
+        self.egraph[exp].data == Ty::Bool(Some(false))
     }
 }

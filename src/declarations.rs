@@ -9,7 +9,7 @@ use crate::{function::{Function, FunctionVerified}, method::{Method, MethodVerif
 #[derive(Default, Debug)]
 pub struct Declarations<'a, F, M> {
     pub callable: FxHashMap<&'a ast::Ident, CallableDecl<'a, F, M>>,
-    pub field: FxHashMap<&'a ast::Ident, &'a ast::Field>,
+    pub field: FxHashMap<&'a ast::Ident, &'a ast::Type>,
     pub ty: FxHashMap<&'a ast::Ident, TypeDecl<'a>>,
     pub axiom: Vec<&'a ast::Axiom>,
 }
@@ -112,7 +112,9 @@ impl<'a> AstWalker<'a> for Declarations0<'a> {
         self.axiom.push(ast);
     }
     fn walk_field(&mut self, ast: &'a ast::Field) {
-        self.field.insert(&ast.fields[0].0, ast);
+        for (name, ty) in &ast.fields {
+            self.field.insert(name, ty);
+        }
     }
     fn walk_function(&mut self, ast: &'a ast::Function) {
         self.callable.insert(&ast.signature.name, CallableDecl::Function(ast, ()));

@@ -1,6 +1,6 @@
 use silver_oxide::ast;
 
-use crate::{declarations::{CallableDecl, Declarations}, error::Error, exp::{BinOp, Exp, PathCondition, UnOp}, heap::{Mutation, PermissionConfig, Temporary}, pure::EGraph, silicon::{Bindings, Silicon, StmtState}, state::ValueState};
+use crate::{declarations::{CallableDecl, Declarations}, error::Error, exp::{BinOp, Exp, PathCondition, UnOp}, heap::{Mutation, PermissionConfig, Temporary}, pure::{EGraph, TyKind}, silicon::{Bindings, Silicon, StmtState}, state::ValueState};
 
 impl<'a, 'e, F, M> StmtState<'a, 'e, F, M> {
     pub fn translator(&self, mode: TranslationMode) -> Translator<'_, 'e, F, M> {
@@ -10,7 +10,7 @@ impl<'a, 'e, F, M> StmtState<'a, 'e, F, M> {
 
 impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
     pub fn translate_for_inhale(&mut self, exp: &'e ast::Exp) -> Result<TranslationResult, Error<'e>> {
-        let assert_snapshot = self.value_state.egraph.next_symbolic_value(None);
+        let assert_snapshot = self.value_state.egraph.next_symbolic_value(None, TyKind::Snapshot(()));
         let translator = self.stmt_state.translator(TranslationMode::Inhale)
             .set_assert_snapshot(assert_snapshot);
         translator.translate(exp, &mut self.value_state)
@@ -171,7 +171,7 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
                 Exp::Ternary([c, t, f])
             }
             Field(r, field) => {
-                let resource = self.translate_field_target(r, field, value_state)?;
+                let (resource, _) = self.translate_field_target(r, field, value_state)?;
                 let value = value_state.heap
                     .get_symbolic_value(&mut value_state.egraph, resource, self.pc, self.mutation)
                     .map_err(|kind| Error::expression(exp, kind))?;
@@ -185,6 +185,10 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
                 let declaration = self.decls.callable.get(name).ok_or_else(|| Error::undeclared_function(name))?;
                 match declaration {
                     CallableDecl::Function(fun, _) => {
+                        let ast::ArgOrType::Type(ret) = &fun.signature.ret[0] else {
+                            unreachable!()
+                        };
+                        let ty = TyKind::from(ret);
                         let (mut args, mut params) = self.translate_params(args, &fun.signature.args, value_state)?;
                         if let Some(pre) = &fun.contract.precondition {
                             // TODO: which `pc`` to use here?
@@ -196,7 +200,7 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
                             args.push(pre.snapshot);
                         }
 
-                        let result = value_state.egraph.add(Exp::FuncApp(name.clone(), args));
+                        let result = value_state.egraph.add(Exp::FuncApp(name.clone(), args, ty));
 
                         // TODO: improve this hack to unfold fn defns only once
                         // if data.args.is_empty() {
@@ -209,9 +213,17 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
 
                         params.insert(None, result);
                         if let Some(post) = &fun.contract.postcondition {
-                            // TODO: which `pc`` to use here?
+                            // TODO: which `pc` to use here?
                             let translator = Translator::new(self.pc, TranslationMode::Expression, &params, self.decls);
-                            let post = translator.translate(post, value_state)?;
+                            let post = translator.translate(post, value_state).expect("internal error");
+
+                            // Note: this does not necessarily need to be under
+                            // the PC, but this matches Viper behaviour and does
+                            // not pollute other branches. Though this cases
+                            // some awkwardness when using a function as a
+                            // lemma, e.g. `b && lemma(...)` since the lemma
+                            // postcondition will be under the PC and thus not
+                            // apply everywhere!
                             self.pc.assume(&mut value_state.egraph, post.expression, "fn post");
                         }
                         return Ok(result);
@@ -220,7 +232,7 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
                         self.mode.assert_expression(false, exp)?;
                         let loc = self.translate_predicate_target(name, args, value_state)?;
                         let perm = self.translate_permission(None, value_state)?;
-                        return self.translate_acc_exp(loc, perm, false, value_state, translation_state, exp)
+                        return self.translate_acc_exp(loc, perm, None, value_state, translation_state, exp)
                     }
                     // TODO: domain functions
                     _ => todo!(),
@@ -229,23 +241,24 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
             Acc(acc) => {
                 self.mode.assert_expression(false, exp)?;
                 let perm = self.translate_permission(acc.perm.as_ref(), value_state)?;
-                let (loc, bound) = match &acc.acc.loc {
+                let (loc, field) = match &acc.acc.loc {
                     ast::Exp::FuncApp(name, args) => {
                         let loc = self.translate_predicate_target(name, args, value_state)?;
-                        (loc, false)
+                        (loc, None)
                     }
                     ast::Exp::Field(r, field) => {
-                        let loc = self.translate_field_target(r, field, value_state)?;
-                        (loc, true)
+                        let (loc, ty) = self.translate_field_target(r, field, value_state)?;
+                        (loc, Some(TyKind::from(ty)))
                     }
                     _ => unreachable!(),
                 };
-                return self.translate_acc_exp(loc, perm, bound, value_state, translation_state, exp)
+                return self.translate_acc_exp(loc, perm, field, value_state, translation_state, exp)
             }
             Unfolding(acc, exp) => {
                 let (body, params, loc, perm) = self.extract_predicate(acc, value_state)?;
                 let self_ = self.temporary_up();
                 let body = self_.unfold_inner(acc, body, &params, loc, perm, value_state)?;
+                // See note above for function calls
                 self.pc.assume(&mut value_state.egraph, body, "unfolding predicate body");
                 let exp = self_.t_inner_as_exp(exp, value_state)?;
 
@@ -308,11 +321,11 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
             .collect::<core::result::Result<_, _>>()?;
         Ok(value_state.egraph.add(Exp::PredicateApp(name.clone(), args)))
     }
-    pub fn translate_field_target(self, r: &'e ast::Exp, field: &'e ast::Ident, value_state: &mut ValueState) -> Result<egg::Id, Error<'e>> {
-        self.decls.field.get(field).ok_or_else(|| Error::undeclared_field(field))?;
+    pub fn translate_field_target(self, r: &'e ast::Exp, field: &'e ast::Ident, value_state: &mut ValueState) -> Result<(egg::Id, &'e ast::Type), Error<'e>> {
+        let ty = self.decls.field.get(field).ok_or_else(|| Error::undeclared_field(field))?;
 
         let recv = self.t_inner_as_exp(r, value_state)?;
-        Ok(value_state.egraph.add(Exp::PredicateApp(field.clone(), vec![recv])))
+        Ok((value_state.egraph.add(Exp::PredicateApp(field.clone(), vec![recv])), ty))
     }
 
     fn permission_config<T: Copy>(self, t: impl FnOnce() -> T) -> PermissionConfig<T> {
@@ -325,7 +338,7 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
             PermissionConfig::Mutation(t())
         }
     }
-    pub(super) fn translate_acc_exp(self, loc: egg::Id, perm: Option<egg::Id>, bound: bool, value_state: &mut ValueState, translation_state: &mut TranslationState, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
+    pub(super) fn translate_acc_exp(self, loc: egg::Id, perm: Option<egg::Id>, field: Option<TyKind>, value_state: &mut ValueState, translation_state: &mut TranslationState, exp: &'e ast::Exp) -> Result<egg::Id, Error<'e>> {
         let perm = perm.unwrap_or(value_state.egraph.none());
         let result;
         let snapshot = match self.mode {
@@ -339,10 +352,14 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
             TranslationMode::Inhale => {
                 result = value_state.egraph.true_();
                 let value = self.next_assert_snapshot(&mut value_state.egraph, translation_state);
-                let bound = bound.then_some(value_state.egraph.write());
+                let value = value.map(|value|
+                    field.map(|field| value_state.egraph.add(Exp::Downcast(value, field))).unwrap_or(value)
+                );
+                let bound = field.is_some().then_some(value_state.egraph.write());
                 let config = self.permission_config(|| ());
+                let ty = field.unwrap_or(TyKind::Snapshot(()));
                 value_state.heap
-                    .add_permission(&mut value_state.egraph, loc, perm, self.pc, value, bound, config)
+                    .add_permission(&mut value_state.egraph, loc, perm, self.pc, value, bound, config, ty)
                     .map_err(|kind| Error::expression(exp, kind))
             }
             TranslationMode::Fact => {
@@ -354,12 +371,17 @@ impl<'a, 'e, F, M> Translator<'a, 'e, F, M> {
             TranslationMode::Expression => unreachable!(),
         };
         let snapshot = match snapshot {
-            Ok(snapshot) => snapshot,
+            Ok(snapshot) => if let Some(field) = field {
+                // TODO: it's ugly to depend on bound here
+                value_state.egraph.add(Exp::Upcast(snapshot, field))
+            } else {
+                snapshot
+            },
             Err(err) => {
                 let false_ = value_state.egraph.false_();
                 // Do not error if PC is false
                 self.pc.assert(&mut value_state.egraph, false_).map_err(|_| err)?;
-                value_state.egraph.next_symbolic_value(None)
+                value_state.egraph.next_symbolic_value(None, TyKind::Snapshot(()))
             }
         };
         translation_state.collect_snapshot.push(snapshot);

@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use egg::{Applier, EGraph, Id, Searcher, Subst};
 
-use crate::{exp::Exp, meaning::{Constant, Meaning}, pure::Constants};
+use crate::{exp::Exp, pure::{Constants, Ty, Meaning}};
 
 static RULES: OnceLock<Vec<egg::Rewrite<Exp, Meaning>>> = OnceLock::new();
 pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
@@ -156,17 +156,16 @@ impl BoolRewriter {
         egraph: &EGraph<Exp, Meaning>,
         eclass: Id,
         mut limit: usize,
-        f: impl Fn(&Exp, &Constant) -> Option<Subst>,
+        f: impl Fn(&Exp, &Ty) -> Option<Subst>,
     ) -> Option<egg::SearchMatches<'static, Exp>> {
         let ec = &egraph[eclass];
-        let meaning = ec.data.as_ref()?;
 
         let mut substs = Vec::new();
         for enode in ec.iter() {
             if limit == 0 {
                 break;
             }
-            if let Some(subst) = f(enode, meaning) {
+            if let Some(subst) = f(enode, &ec.data) {
                 substs.push(subst);
                 limit -= 1;
             }
@@ -189,12 +188,12 @@ impl Searcher<Exp, Meaning> for BoolRewriter {
         BoolRewriter::search(egraph, eclass, limit, |enode, meaning| {
             match enode {
                 Exp::Ternary([c, t, e]) => {
-                    if meaning.compare(egraph[*t].data.as_ref()).is_some_and(|eq| !eq) {
+                    if meaning.compare(&egraph[*t].data).ok().flatten().is_some_and(|eq| !eq) {
                         let mut subst = egg::Subst::with_capacity(2);
                         subst.insert("?0".parse().unwrap(), self.constants.false_);
                         subst.insert("?1".parse().unwrap(), *c);
                         Some(subst)
-                    } else if meaning.compare(egraph[*e].data.as_ref()).is_some_and(|eq| !eq) {
+                    } else if meaning.compare(&egraph[*e].data).ok().flatten().is_some_and(|eq| !eq) {
                         let mut subst = egg::Subst::with_capacity(2);
                         subst.insert("?0".parse().unwrap(), self.constants.true_);
                         subst.insert("?1".parse().unwrap(), *c);

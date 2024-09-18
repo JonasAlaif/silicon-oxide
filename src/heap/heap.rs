@@ -2,7 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use fxhash::FxHashMap;
 
-use crate::{error::ExpressionError, exp::{BinOp, Exp, PathCondition}, pure::EGraph};
+use crate::{error::ExpressionError, exp::{BinOp, Exp, PathCondition}, pure::{EGraph, TyKind}};
 
 pub type Mutation = u32;
 pub type TemporaryInner = u32;
@@ -135,8 +135,8 @@ impl CTreeChunkUpdate {
         let non_zero = egraph.add(Exp::BinOp(BinOp::Lt, [egraph.none(), self.chunk.permission]));
         // TODO: use the old or the new condition here?
         if let Err(_) = self.condition.assert_lite(egraph, non_zero) {
-            let new_val = egraph.next_symbolic_value(None);
-            self.chunk.symbolic_value = egraph.add(Exp::Ternary([non_zero, self.chunk.symbolic_value, new_val]));
+            let new_val = egraph.next_symbolic_value(None, egraph.egraph[old_value].data.ty_default());
+            self.chunk.symbolic_value = egraph.add(Exp::Ternary([non_zero, old_value, new_val]));
         }
         Ok(old_value)
     }
@@ -195,12 +195,12 @@ impl Heap {
     /// assumed to be less than or equal to `bound`. A new symbolic value is
     /// created if we had no permission before. Returns the symbolic value of
     /// the chunk.
-    pub fn add_permission(&mut self, egraph: &mut EGraph, resource: egg::Id, permission: egg::Id, condition: PathCondition, value: Option<egg::Id>, bound: Option<egg::Id>, config: PermissionConfig<()>) -> Result<egg::Id, ExpressionError> {
+    pub fn add_permission(&mut self, egraph: &mut EGraph, resource: egg::Id, permission: egg::Id, condition: PathCondition, value: Option<egg::Id>, bound: Option<egg::Id>, config: PermissionConfig<()>, ty: TyKind) -> Result<egg::Id, ExpressionError> {
         let resource = egraph.normalise(resource);
         let resource = self.entry(resource).or_insert_with(|| CTreeChunk {
             chunk: HeapChunk {
                 permission: egraph.none(),
-                symbolic_value: value.unwrap_or_else(|| egraph.next_symbolic_value(None))
+                symbolic_value: value.unwrap_or_else(|| egraph.next_symbolic_value(None, ty))
             },
             updates: Vec::new(),
         });

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use num_bigint::BigInt;
 
-use crate::{exp::{BinOp, Exp, PathCondition, UnOp}, meaning::Constant, pure::EGraph, silicon::Silicon};
+use crate::{exp::{BinOp, Exp, PathCondition, UnOp}, pure::{Ty, EGraph}, silicon::Silicon};
 
 impl EGraph {
     pub fn dot(&self, mut path: PathBuf, header: Option<String>, footer: Option<String>) {
@@ -22,11 +22,8 @@ impl EGraph {
         }
 
         for class in egraph.classes() {
-            let Some(data) = &class.data else {
-                continue;
-            };
             let subgraph = format!("subgraph cluster_{} {{\n", class.id);
-            dot = dot.replacen(&subgraph, &format!("{subgraph}    label=\"{data}\";\n"), 1);
+            dot = dot.replacen(&subgraph, &format!("{subgraph}    label=\"{}\";\n", class.data), 1);
         }
 
         path.set_extension("dot");
@@ -97,12 +94,8 @@ impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
 
 impl Exp {
     pub fn log(&self, id: egg::Id, egraph: &EGraph) -> bool {
-        let is_bool_constant = |id: &egg::Id| egraph.egraph[*id].data.as_ref().is_some_and(|data|
-            matches!(data, Constant::Bool(..))
-        );
-        let is_rational_constant = |id: &egg::Id| egraph.egraph[*id].data.as_ref().is_some_and(|data|
-            matches!(data, Constant::Rational(..))
-        );
+        let is_bool_constant = |id: &egg::Id| matches!(&egraph.egraph[*id].data, Ty::Bool(Some(_)));
+        let is_rational_constant = |id: &egg::Id| matches!(&egraph.egraph[*id].data, Ty::Rational(Some(_)));
         match self {
             Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Lt | BinOp::Eq, [a, b]) if egraph.ids_equal(*a, *b) => false,
 
@@ -137,8 +130,6 @@ impl EGraph {
     }
 
     fn is_number(&self, id: egg::Id, number: BigInt) -> bool {
-        self.egraph[id].data.as_ref().is_some_and(|data|
-            matches!(data, Constant::Rational(r) if *r.numer() == number && r.is_integer())
-        )
+        matches!(&self.egraph[id].data, Ty::Rational(Some(r)) if *r.numer() == number && r.is_integer())
     }
 }

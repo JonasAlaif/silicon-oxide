@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use fxhash::FxHashMap;
 use silver_oxide::ast;
 
-use crate::{declarations::Declarations, error::Error, exp::PathCondition, state::ValueState, translate::{TranslationMode, TranslationResult}};
+use crate::{declarations::Declarations, error::Error, exp::PathCondition, pure::TyKind, state::ValueState, translate::{TranslationMode, TranslationResult}};
 
 #[derive(Debug, Clone)]
 pub struct Silicon<'a, 'e, F, M> {
@@ -49,10 +49,11 @@ impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
     }
 
     pub fn new_arg(&mut self, arg: &'e silver_oxide::ast::ArgOrType) -> egg::Id {
-        let silver_oxide::ast::ArgOrType::Arg((ident, _)) = arg else {
+        let silver_oxide::ast::ArgOrType::Arg((ident, ty)) = arg else {
             panic!("Expected named arg, got {:?}", arg);
         };
-        let id = self.value_state.egraph.next_symbolic_value(Some(ident.0.clone()));
+        let ty = TyKind::from(ty);
+        let id = self.value_state.egraph.next_symbolic_value(Some(ident.0.clone()), ty);
         self.stmt_state.bindings.insert(Some(ident), id);
         id
     }

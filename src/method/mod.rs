@@ -73,7 +73,7 @@ impl<'a, 'e> Method<'a, 'e> {
                     }
                     silver_oxide::ast::Exp::Field(r, field) => {
                         let translator = self.silicon.stmt_state.translator(TranslationMode::Expression);
-                        let resource = translator.translate_field_target(r, field, &mut self.silicon.value_state).unwrap();
+                        let (resource, _) = translator.translate_field_target(r, field, &mut self.silicon.value_state).unwrap();
                         self.silicon.value_state.heap
                             .update_symbolic_value(&mut self.silicon.value_state.egraph, resource, new_value, self.silicon.stmt_state.pc)
                             .map_err(|kind| Error::expression(target, kind)).unwrap();

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{error::Error, pure::EGraph};
+use crate::{error::Error, pure::{EGraph, Ty, TyKind}};
 
 pub type Snapshot = egg::Id;
 
@@ -25,7 +25,7 @@ pub enum ExpG<T> {
     // LetIn(Ident, Box<Exp>, Box<Exp>),
     // ForPerm(Vec<(Ident, Type)>, Box<ResAccess>, Box<Exp>),
     // Acc(Box<AccExp>),
-    FuncApp(silver_oxide::ast::Ident, Vec<T>),
+    FuncApp(silver_oxide::ast::Ident, Vec<T>, TyKind),
     /// Should never have parents!
     PredicateApp(silver_oxide::ast::Ident, Vec<T>),
     SymbolicValue(SymbolicValue),
@@ -37,6 +37,10 @@ pub enum ExpG<T> {
     // InhaleExhale(Box<Exp>, Box<Exp>),
     Snapshot(Vec<T>),
     Project(T, usize),
+    /// Going down to `TyKind::Snapshot -> self.1`
+    Downcast(T, TyKind),
+    /// Going up from `self.1 -> TyKind::Snapshot`
+    Upcast(T, TyKind),
 }
 
 pub type Exp = ExpG<egg::Id>;
@@ -69,13 +73,13 @@ pub type Exp = ExpG<egg::Id>;
 // }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SymbolicValue(pub u64, pub Option<String>);
+pub struct SymbolicValue(pub u64, pub Option<String>, pub TyKind);
 
 impl<T: fmt::Display> fmt::Display for ExpG<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Const(c) => write!(f, "{c:?}"),
-            Self::FuncApp(i, args) | Self::PredicateApp(i, args) => {
+            Self::FuncApp(i, args, _) | Self::PredicateApp(i, args) => {
                 write!(f, "{}(", i.0)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -85,8 +89,8 @@ impl<T: fmt::Display> fmt::Display for ExpG<T> {
                 }
                 write!(f, ")")
             }
-            Self::SymbolicValue(SymbolicValue(sv, None)) => write!(f, "@{sv}"),
-            Self::SymbolicValue(SymbolicValue(sv, Some(name))) => write!(f, "{name}@{sv}"),
+            Self::SymbolicValue(SymbolicValue(sv, None, _)) => write!(f, "@{sv}"),
+            Self::SymbolicValue(SymbolicValue(sv, Some(name), _)) => write!(f, "{name}@{sv}"),
             Self::BinOp(op, [l, r]) => write!(f, "(#{} {:?} #{})", l, op, r),
             Self::Ternary([c, t, e]) => write!(f, "(#{} ? #{} : #{})", c, t, e),
             Self::UnOp(op, e) => write!(f, "{op}#{}", e),
@@ -101,6 +105,8 @@ impl<T: fmt::Display> fmt::Display for ExpG<T> {
                 write!(f, ")")
             }
             Self::Project(e, i) => write!(f, "#{e}[{i}]"),
+            Self::Downcast(e, _) => write!(f, "#{e}⟱"),
+            Self::Upcast(e, _) => write!(f, "#{e}⟰"),
         }
     }
 }

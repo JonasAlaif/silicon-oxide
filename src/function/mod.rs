@@ -1,6 +1,6 @@
 use std::{ops::Deref, path::PathBuf};
 
-use crate::{declarations::Declarations0, error::Error, exp::Exp, pure::EGraph, silicon::{Bindings, Silicon}};
+use crate::{declarations::Declarations0, error::Error, exp::Exp, pure::{EGraph, TyKind}, silicon::{Bindings, Silicon}};
 
 pub struct Function<'a, 'e> {
     pub silicon: Silicon<'a, 'e, (), ()>,
@@ -39,7 +39,9 @@ impl<'a, 'e> Function<'a, 'e> {
             let pre = silicon.inhale(pre, "precondition").unwrap();
             args.push(pre.snapshot);
         };
-        let call = silicon.value_state.egraph.add(Exp::FuncApp(function.signature.name.clone(), args));
+        let silver_oxide::ast::ArgOrType::Type(ret) = &function.signature.ret[0] else {
+            unreachable!()
+        };
 
         let fn_name = function.signature.name.0.as_str();
         silicon.log_pure(&format!("{fn_name}_pre"), None);
@@ -57,6 +59,8 @@ impl<'a, 'e> Function<'a, 'e> {
             // silicon.assume(post).unwrap();
             // silicon.stmt_state.bindings.remove(&None);
         }
+        let ret = TyKind::from(ret);
+        let call = silicon.value_state.egraph.add(Exp::FuncApp(function.signature.name.clone(), args, ret));
         silicon.value_state.egraph.equate(call, body, "return");
 
         silicon.log_pure(&format!("{fn_name}_post"), None);

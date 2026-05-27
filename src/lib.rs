@@ -1,12 +1,12 @@
 pub mod egg;
-pub mod exp;
+// pub mod exp;
 pub mod state;
 pub mod heap;
 pub mod error;
 pub mod silicon;
 pub mod pure;
-pub mod translate;
+// pub mod translate;
 pub mod log;
-pub mod declarations;
-pub mod function;
-pub mod method;
+// pub mod declarations;
+// pub mod heap_function;
+pub mod translator;

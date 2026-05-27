@@ -1,4 +1,4 @@
-use fxhash::FxHashMap;
+use crate::HashMap;
 
 use crate::{path_condition::PathCondition, pure::EGraph, exp::BinOp};
 

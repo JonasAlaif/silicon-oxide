@@ -1,18 +1,19 @@
 
-use std::slice::{from_mut, from_ref};
+use std::{slice::{from_mut, from_ref}, str::FromStr};
 
 use egg::{FromOp, Language};
 
-use crate::exp::{BinOp, Exp, UnOp};
+use crate::{exp::{BinOp, Exp, UnOp}, pure::TyKind};
 
 impl FromOp for Exp {
     type Error = ();
     fn from_op(op: &str, children: Vec<egg::Id>) -> Result<Self, Self::Error> {
         match (op, children.as_slice()) {
-            ("true", &[]) => Ok(Exp::Const(silver_oxide::ast::Const::Bool(true))),
-            ("false", &[]) => Ok(Exp::Const(silver_oxide::ast::Const::Bool(false))),
-            ("none", &[]) => Ok(Exp::Const(silver_oxide::ast::Const::None)),
-            ("write", &[]) => Ok(Exp::Const(silver_oxide::ast::Const::Write)),
+            ("true", &[]) => Ok(Exp::Const(silver_oxide::parse::ConstKind::Bool(true))),
+            ("false", &[]) => Ok(Exp::Const(silver_oxide::parse::ConstKind::Bool(false))),
+            ("none", &[]) => Ok(Exp::Const(silver_oxide::parse::ConstKind::none())),
+            ("write", &[]) => Ok(Exp::Const(silver_oxide::parse::ConstKind::write())),
+            ("wild", &[]) => Ok(Exp::Const(silver_oxide::parse::ConstKind::Wildcard)),
 
             ("!", &[child]) => Ok(Exp::UnOp(UnOp::Not, child)),
             ("-", &[child]) => Ok(Exp::UnOp(UnOp::Neg, child)),
@@ -27,8 +28,17 @@ impl FromOp for Exp {
             ("%", &[lhs, rhs]) => Ok(Exp::BinOp(BinOp::Mod, [lhs, rhs])),
 
             ("?", &[cond, then, els]) => Ok(Exp::Ternary([cond, then, els])),
-            (number, &[]) if number.parse::<num_bigint::BigUint>().is_ok() => {
-                Ok(Exp::Const(silver_oxide::ast::Const::Int(number.parse().unwrap())))
+            ("itr", &[child]) => Ok(Exp::UnOp(UnOp::IntToReal, child)),
+            // (op, &[child]) if op.starts_with('@') => {
+            //     let op = op.strip_prefix('@').unwrap();
+            //     let mut op = op.split('-');
+            //     let from = op.next().unwrap().parse().unwrap();
+            //     let to = op.next().unwrap().parse().unwrap();
+            //     assert!(op.next().is_none());
+            //     Ok(Exp::TyCast(child, from, to))
+            // }
+            (number, &[]) if number.parse::<num::BigUint>().is_ok() => {
+                Ok(Exp::Const(silver_oxide::parse::ConstKind::Int(number.parse().unwrap())))
             }
             _ => Err(()),
         }
@@ -44,10 +54,11 @@ impl Language for Exp {
             (Exp::BinOp(op1, _), Exp::BinOp(op2, _)) => op1 == op2,
             (Exp::Ternary(_), Exp::Ternary(_)) => true,
             (Exp::UnOp(op1, _), Exp::UnOp(op2, _)) => op1 == op2,
-            (Exp::Snapshot(es1), Exp::Snapshot(es2)) => es1.len() == es2.len(),
-            (Exp::Project(_, i1), Exp::Project(_, i2)) => i1 == i2,
-            (Exp::Downcast(_, t1), Exp::Downcast(_, t2)) => t1 == t2,
-            (Exp::Upcast(_, t1), Exp::Upcast(_, t2)) => t1 == t2,
+            (Exp::Snapshot(es1, eid1), Exp::Snapshot(es2, eid2)) =>
+                es1.len() == es2.len() && eid1 == eid2,
+            (Exp::Project(_, i1, t1), Exp::Project(_, i2, t2)) =>
+                i1 == i2 && t1 == t2,
+            // (Exp::TyCast(_, tf1, tt1), Exp::TyCast(_, tf2, tt2)) => tf1 == tf2 && tt1 == tt2,
             _ => false,
         }
     }
@@ -61,10 +72,10 @@ impl Language for Exp {
             Exp::BinOp(_, children) => children,
             Exp::Ternary(children) => children,
             Exp::UnOp(_, children) => from_ref(children),
-            Exp::Snapshot(es) => es,
-            Exp::Project(e, _) => from_ref(e),
-            Exp::Downcast(e, _) => from_ref(e),
-            Exp::Upcast(e, _) => from_ref(e),
+            Exp::Snapshot(es, _) => es,
+            Exp::Project(e, _, _) => from_ref(e),
+            _ => todo!(),
+            // Exp::TyCast(e, _, _) => from_ref(e),
         }
     }
 
@@ -77,10 +88,34 @@ impl Language for Exp {
             Exp::BinOp(_, children) => children,
             Exp::Ternary(children) => children,
             Exp::UnOp(_, children) => from_mut(children),
-            Exp::Snapshot(es) => es,
-            Exp::Project(e, _) => from_mut(e),
-            Exp::Downcast(e, _) => from_mut(e),
-            Exp::Upcast(e, _) => from_mut(e),
+            Exp::Snapshot(es, _) => es,
+            Exp::Project(e, _, _) => from_mut(e),
+            _ => todo!(),
+            // Exp::TyCast(e, _, _) => from_mut(e),
+        }
+    }
+}
+
+// Bool(Bool),
+// Integer(Integer),
+// Real(Real),
+// /// Data indicates if this is `Null`.
+// Ref(Ref),
+// Snapshot(Snapshot),
+// PredicateId,
+// #[default]
+// TypeError,
+
+impl FromStr for TyKind {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "bool" => Ok(TyKind::Bool(())),
+            "int" => Ok(TyKind::Integer(())),
+            "real" => Ok(TyKind::Real(())),
+            "ref" => Ok(TyKind::Ref(())),
+            // "snap" => Ok(TyKind::Snapshot(())),
+            _ => Err(()),
         }
     }
 }

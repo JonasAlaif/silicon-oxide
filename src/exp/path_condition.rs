@@ -1,4 +1,4 @@
-use crate::{exp::{BinOp, Exp, UnOp}, pure::EGraph};
+use crate::{exp::{BinOp, Exp, UnOp}, pure::EGraph, translator::VerificationState};
 
 
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +14,10 @@ impl PathCondition {
     }
     fn new_with(positive: egg::Id, negative: egg::Id) -> Self {
         Self { pos_neg: [positive, negative] }
+    }
+
+    pub fn is_true(&self, egraph: &EGraph) -> bool {
+        egraph.is_true(self.pos_neg[0])
     }
 
     pub fn positive(&self) -> egg::Id {
@@ -65,13 +69,18 @@ impl PathCondition {
         egraph.saturate();
         egraph.is_true(assertion).then(|| ()).ok_or(assertion)
     }
-    pub fn assert(&self, egraph: &mut EGraph, assertion: egg::Id) -> Result<(), egg::Id> {
+    pub fn assert(&self, egraph: &mut EGraph, assertion: egg::Id, reason: &str, decls: &VerificationState<'_>) -> Result<(), egg::Id> {
         let Err(assertion) = self.assert_lite(egraph, assertion) else {
             return Ok(());
         };
-        // if egraph.z3_assert(assertion) {
-        //     return Ok(());
-        // }
+        // egraph.expand_heap_fns(decls);
+        egraph.log_pure("_pc/z3_assert", Some(egraph.normalise(assertion).to_string()));
+        if egraph.z3_assert(assertion, reason, decls) {
+            println!("assertion succeeded after z3_assert {:?}", egraph.normalise(assertion));
+            egraph.assume(assertion, "smt");
+            egraph.log_pure("_pc/z3_pass_post", Some(egraph.normalise(assertion).to_string()));
+            return Ok(());
+        }
         Err(egraph.normalise(assertion))
         // // TODO: check how often this happens
         // let mut egraph_branch = egraph.clone();

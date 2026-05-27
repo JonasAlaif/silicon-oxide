@@ -1,35 +1,82 @@
 use std::path::PathBuf;
 
-use fxhash::FxHashMap;
-use silver_oxide::ast;
+use silver_oxide::{parse, translate::{body::OperandKind, exp::{Exp, ExpOperand, ExpOperandKind, HeapOp}, ExpLocal, Local, Temporary}, TiVec, TyCtxt};
 
-use crate::{declarations::{CallableDecl, Declarations}, error::Error, exp::{PathCondition, Snapshot}, heap::{Heap, Mutation}, pure::EGraph, translate::{TranslationMode}};
+use crate::{error::Error, heap::{Heap, PermissionConfig}, pure::{EGraph, PathCondition}, translator::{resource::EggResource, VerificationState}};
+
+pub type Value = egg::Id;
 
 #[derive(Debug, Clone)]
-pub struct ValueState {
-    pub egraph: EGraph,
+pub struct ValueState<'tcx> {
+    // TODO: I'm not sure these are really necessary, imo they can be added as
+    // needed.
+    pub locals: TiVec<Local, Value>,
+    pub egraph: EGraph<'tcx>,
     pub heap: Heap,
-    mutation_id: Mutation,
+    // /// Keep track of heap function defns which could be unfolded
+    // // pub heap_functions: HeapFunctions,
+    // mutation_id: Mutation,
+
+    pub exp_locals: TiVec<ExpLocal, Value>,
 }
 
-impl ValueState {
-    pub fn new() -> Self {
+impl<'tcx> ValueState<'tcx> {
+    pub fn new(tcx: &'tcx TyCtxt<'tcx>) -> Self {
         Self {
-            egraph: EGraph::default(),
+            locals: Default::default(),
+            egraph: EGraph::new(tcx),
             heap: Heap::default(),
-            mutation_id: Default::default(),
+            // heap_functions: Default::default(),
+            // mutation_id: Default::default(),
+            exp_locals: Default::default(),
         }
+    }
+
+    pub fn translate_exp_operand(&mut self, nd: ExpOperand<'tcx>) -> egg::Id {
+        use ExpOperandKind::*;
+        use OperandKind::*;
+        match nd.kind {
+            Operand(Const(c)) => self.egraph.add_const(nd.ty, c),
+            Operand(Local(l)) => self.egraph.add(nd.ty, l),
+            Operand(Temporary(l)) => self.egraph.add(nd.ty, l),
+            QuantLocal(l) => self.egraph.add(nd.ty, l),
+            ExpLocal(0, l) => self.exp_locals[l],
+            ExpLocal(..) => todo!(),
+        }
+    }
+
+    pub fn translate_heap_op(&mut self, op: HeapOp, addr: egg::Id, pc: &PathCondition, decls: &VerificationState) -> egg::Id {
+        match op {
+            HeapOp::Deref => self.heap.get_symbolic_value(&mut self.egraph, addr, pc, None, decls).unwrap(),
+            HeapOp::Perm => self.heap.get_permission(&mut self.egraph, addr, pc, None).unwrap().1,
+        }
+    }
+
+    pub fn inhale_resource(&mut self, res: &EggResource, value: Option<egg::Id>, bound: Option<egg::Id>, decls: &VerificationState) -> egg::Id {
+        // BIG TODO: correct arguments
+        let pc = &res.cond;
+        let config = PermissionConfig::Mutation(());
+        self.heap.add_permission(&mut self.egraph, res.loc, res.perm, pc, value, bound, config, decls).unwrap()
+    }
+
+    pub fn assume(&mut self, exp: egg::Id, reason: &str) {
+        self.egraph.assume(exp, reason);
+        self.egraph.rebuild();
     }
 
     // pub fn new_binding(&mut self, binding: &'e ast::Ident) {
     //     let id = self.egraph.next_symbolic_value(Some(binding.0.clone()));
     //     self.bindings.insert(Some(binding), id);
     // }
-    pub fn mutation_id(&mut self) -> Mutation {
-        let id = self.mutation_id;
-        self.mutation_id += 1;
-        id
-    }
+    // pub fn mutation_id(&mut self) -> Mutation {
+    //     let id = self.mutation_id;
+    //     self.mutation_id += 1;
+    //     id
+    // }
+
+    // pub fn ty(&self, id: egg::Id) -> &Ty {
+    //     &self.egraph.egraph[id].data
+    // }
 
     // pub fn inhale(&mut self, exp: &'e ast::Exp, reason: impl Into<egg::Symbol> + Clone, pc: PathCondition) -> Result<Snapshot, Error<'e>> {
     //     self.inhale_many([exp].into_iter(), reason, pc)

@@ -2,11 +2,21 @@ use std::sync::OnceLock;
 
 use egg::{Applier, EGraph, Id, Searcher, Subst};
 
-use crate::{exp::Exp, pure::{Constants, Ty, Meaning}};
+use crate::{exp::{Exp, UnOp}, pure::{Constants, EggAnalysis, EggExp, Meaning, Ty, TyKind}};
 
-static RULES: OnceLock<Vec<egg::Rewrite<Exp, Meaning>>> = OnceLock::new();
+pub fn rewrites<'tcx>(_constants: Constants) -> &'static [egg::Rewrite<EggExp, EggAnalysis<'tcx>>] {
+    static RULES: OnceLock<Vec<egg::Rewrite<EggExp, EggAnalysis<'static>>>> = OnceLock::new();
+    &**RULES.get_or_init(|| {
+        // TOOD:
+        [
+            
+        ].to_vec()
+    })
+}
+
 pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
-    RULES.get_or_init(|| {
+    static RULES: OnceLock<Vec<egg::Rewrite<Exp, Meaning>>> = OnceLock::new();
+    &**RULES.get_or_init(|| {
         // use egg::*;
 
         // let mut runner = egg::Runner::<SymbolLang, ()>::default();
@@ -29,11 +39,11 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
 
         let bool_rewriter = BoolRewriter { constants };
         [
-            egg::rewrite!("commute-and"; "(&& ?a ?b)" => "(&& ?b ?a)"),
-            egg::rewrite!("commute-or"; "(|| ?a ?b)" => "(|| ?b ?a)"),
-            egg::rewrite!("commute-eq"; "(== ?a ?b)" => "(== ?b ?a)"),
-            egg::rewrite!("commute-plus"; "(+ ?a ?b)" => "(+ ?b ?a)"),
-            egg::rewrite!("commute-mult"; "(* ?a ?b)" => "(* ?b ?a)"),
+            // egg::rewrite!("commute-and"; "(&& ?a ?b)" => "(&& ?b ?a)"),
+            // egg::rewrite!("commute-or"; "(|| ?a ?b)" => "(|| ?b ?a)"),
+            // egg::rewrite!("commute-eq"; "(== ?a ?b)" => "(== ?b ?a)"),
+            // egg::rewrite!("commute-plus"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+            // egg::rewrite!("commute-mult"; "(* ?a ?b)" => "(* ?b ?a)"),
 
             egg::multi_rewrite!("and-is-true"; "?v1 = true, ?v1 = (&& ?a ?b)" => "?a = true, ?b = true"),
             egg::multi_rewrite!("or-is-false"; "?v1 = false, ?v1 = (|| ?a ?b)" => "?a = false, ?b = false"),
@@ -44,41 +54,54 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
             // egg::multi_rewrite!("rewrite-ternary"; "?v1 = (? ?a ?b ?c)" => "?v1 = (&& ?y ?x), ?v2 = (|| ?y ?x)" if definitely_unequal("?v1", "?c")),
             // egg::rewrite!("ternary"; "(?a (? ?b ?c ?d) (? ?b ?e ?f))" => "(? ?b (?a ?c ?e) (?a ?d ?f))"),
 
-            egg::rewrite!("and-true"; "(&& ?a true)" => "?a"),
-            egg::rewrite!("and-false"; "(&& ?a false)" => "false"),
+            egg::rewrite!("and-true-a"; "(&& ?a true)" => "?a"),
+            egg::rewrite!("and-true-b"; "(&& true ?a)" => "?a"),
+            egg::rewrite!("and-false-a"; "(&& ?a false)" => "false"),
+            egg::rewrite!("and-false-b"; "(&& false ?a)" => "false"),
             egg::rewrite!("and-same"; "(&& ?a ?a)" => "?a"),
-            egg::rewrite!("or-true"; "(|| ?a true)" => "true"),
-            egg::rewrite!("or-false"; "(|| ?a false)" => "?a"),
+            egg::rewrite!("or-true-a"; "(|| ?a true)" => "true"),
+            egg::rewrite!("or-true-b"; "(|| true ?a)" => "true"),
+            egg::rewrite!("or-false-a"; "(|| ?a false)" => "?a"),
+            egg::rewrite!("or-false-b"; "(|| false ?a)" => "?a"),
             egg::rewrite!("or-same"; "(|| ?a ?a)" => "?a"),
             egg::rewrite!("eq-reflexive"; "(== ?a ?a)" => "true"),
             egg::rewrite!("lt-false"; "(< ?a ?a)" => "false"),
 
-            egg::rewrite!("demorgan-or"; "(! (|| ?a ?a))" => "(&& (! ?a) (! ?a))"),
-            egg::rewrite!("demorgan-and"; "(! (&& ?a ?a))" => "(|| (! ?a) (! ?a))"),
-            egg::rewrite!("or-distribute"; "(|| ?a (&& ?b ?c))" => "(&& (|| ?a ?b) (|| ?a ?c))"),
-
-            // TODO: these two may not be necessary
-            egg::rewrite!("not-true"; "(! true)" => "false"),
-            egg::rewrite!("not-false"; "(! false)" => "true"),
+            egg::rewrite!("demorgan-or"; "(! (|| ?a ?b))" => "(&& (! ?a) (! ?b))"),
+            egg::rewrite!("demorgan-and"; "(! (&& ?a ?b))" => "(|| (! ?a) (! ?b))"),
+            // egg::rewrite!("or-distribute"; "(|| ?a (&& ?b ?c))" => "(&& (|| ?a ?b) (|| ?a ?c))"),
 
             egg::rewrite!("not-not"; "(! (! ?a))" => "?a"),
             egg::rewrite!("not-lt"; "(! (< ?a ?b))" => "(|| (< ?b ?a) (== ?a ?b))"),
-            egg::rewrite!("excluded-middle"; "(|| ?a (! ?a))" => "true"),
+            egg::rewrite!("excluded-middle-or"; "(|| ?a (! ?a))" => "true"),
+            egg::rewrite!("excluded-middle-and"; "(&& ?a (! ?a))" => "false"),
 
-            egg::rewrite!("minus-self"; "(+ ?a (- ?a))" => "0"),
+            egg::rewrite!("minus-self-a"; "(+ ?a (- ?a))" => "0" if has_ty(TyKind::Integer(()))),
+            egg::rewrite!("minus-self-b"; "(+ (- ?a) ?a)" => "0" if has_ty(TyKind::Integer(()))),
+            egg::rewrite!("rminus-self-a"; "(+ ?a (- ?a))" => "(itr 0)" if has_ty(TyKind::Real(()))),
+            egg::rewrite!("rminus-self-b"; "(+ (- ?a) ?a)" => "(itr 0)" if has_ty(TyKind::Real(()))),
             egg::rewrite!("minus-minus"; "(- (- ?a))" => "?a"),
             egg::rewrite!("minus-plus"; "(- (+ ?a ?b))" => "(+ (- ?a) (- ?b))"),
             // TODO: minus-mult, minus-div?
 
-            egg::rewrite!("plus-zero"; "(+ ?a 0)" => "?a"),
-            egg::rewrite!("minus-zero"; "(- 0)" => "0"),
+            egg::rewrite!("plus-zero-a"; "(+ ?a 0)" => "?a"),
+            egg::rewrite!("plus-zero-b"; "(+ 0 ?a)" => "?a"),
+            egg::rewrite!("rplus-zero-a"; "(+ ?a (itr 0))" => "?a"),
+            egg::rewrite!("rplus-zero-b"; "(+ (itr 0) ?a)" => "?a"),
+
+            // WILDCARD
+
+            egg::rewrite!("wild-lt-zero"; "(< wild (itr 0))" => "false"),
+            egg::rewrite!("wild-eq-zero-a"; "(== wild (itr 0))" => "false"),
+            egg::rewrite!("wild-eq-zero-b"; "(== (itr 0) wild)" => "false"),
+            egg::rewrite!("wild-gt-zero"; "(< (itr 0) wild)" => "true"),
 
             // TERNARY
 
             egg::rewrite!("ternary-true"; "(? true ?a ?b)" => "?a"),
             egg::rewrite!("ternary-false"; "(? false ?a ?b)" => "?b"),
             egg::rewrite!("ternary-same"; "(? ?a ?b ?b)" => "?b"),
-            egg::rewrite!("ternary-swap"; "(? ?a ?b ?c)" => "(? (! ?a) ?c ?b)"),
+            // egg::rewrite!("ternary-swap"; "(? ?a ?b ?c)" => "(? (! ?a) ?c ?b)"),
             egg::rewrite!("ternary-nested"; "(? ?a (? ?a ?b ?c) ?d)" => "(? ?a ?b ?d)"),
 
             egg::rewrite!("ternary-not"; "(! (? ?a ?b ?c))" => "(? ?a (! ?b) (! ?c))"),
@@ -99,14 +122,22 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
 
             // MULT/DIV
 
-            egg::rewrite!("natural-to-rational"; "?a" => "(/ ?a 1)" if is_number("?a")),
-            egg::rewrite!("divide-unit"; "(/ ?a 1)" => "?a"),
-            egg::rewrite!("multiply-unit"; "(* ?a 1)" => "?a"),
-            egg::rewrite!("multiply-zero"; "(* ?a 0)" => "0"),
-            egg::rewrite!("zero-divide"; "(/ 0 ?a)" => "0"),
-            egg::rewrite!("multiply-neg"; "(* ?a (- ?b))" => "(* (- ?a) ?b)"),
-            egg::rewrite!("div-neg-a"; "(/ ?a (- ?b))" => "(/ (- ?a) ?b)"),
-            egg::rewrite!("div-neg-b"; "(/ (- ?a) ?b)" => "(/ ?a (- ?b))"),
+            egg::rewrite!("div-unit"; "(/ ?a 1)" => "(itr ?a)"),
+            egg::rewrite!("mul-unit-a"; "(* ?a 1)" => "?a"),
+            egg::rewrite!("mul-unit-b"; "(* 1 ?a)" => "?a"),
+            egg::rewrite!("mul-zero-a"; "(* ?a 0)" => "0"),
+            egg::rewrite!("mul-zero-b"; "(* 0 ?a)" => "0"),
+            egg::rewrite!("zero-div"; "(/ 0 ?a)" => "(itr 0)"),
+            egg::rewrite!("rdiv-unit"; "(/ ?a (itr 1))" => "?a"),
+            egg::rewrite!("rmul-unit-a"; "(* ?a (itr 1))" => "?a"),
+            egg::rewrite!("rmul-unit-b"; "(* (itr 1) ?a)" => "?a"),
+            egg::rewrite!("rmul-zero-a"; "(* ?a (itr 0))" => "(itr 0)"),
+            egg::rewrite!("rmul-zero-b"; "(* (itr 0) ?a)" => "(itr 0)"),
+            egg::rewrite!("zero-rdiv"; "(/ (itr 0) ?a)" => "(itr 0)"),
+
+            // egg::rewrite!("mul-neg"; "(* ?a (- ?b))" => "(* (- ?a) ?b)"),
+            // egg::rewrite!("div-neg-a"; "(/ ?a (- ?b))" => "(/ (- ?a) ?b)"),
+            // egg::rewrite!("div-neg-b"; "(/ (- ?a) ?b)" => "(/ ?a (- ?b))"),
 
             // TODO: these are bad (matching loop?)
             // egg::rewrite!("div-div-0"; "(/ ?a (/ ?b ?c))" => "(/ (* ?a ?c) ?b)"),
@@ -116,10 +147,23 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
             // egg::rewrite!("div-mul-0"; "(/ (* ?a ?c) ?b)" => "(/ ?a (/ ?b ?c))"),
             // egg::rewrite!("div-mul-1"; "(/ ?a (* ?b ?c))" => "(/ (/ ?a ?c) ?b)"),
 
-            egg::rewrite!("write"; "write" => "1"),
-            egg::rewrite!("none"; "none" => "0"),
+            // egg::rewrite!("write"; "write" => "(@int-real 1)"),
+            // egg::rewrite!("none"; "none" => "(@int-real 0)"),
+
+            // CASTS
+
+            // egg::rewrite!("int-round-trip"; "(@int-real (@real-int ?a))" => "?a"),
+            // egg::rewrite!("int-round-trip"; "(@int-real (@real-int ?a))" => "?a"),
 
             // egg::rewrite!("test"; "(- (/ ?a ?b) (/ ?c ?d))" => "(/ (- (* ?a ?d) (* ?c ?b)) (* ?b ?d))"),// { MySillyApplier("foo") }),
+
+            egg::rewrite!("itr-minus"; "(- (itr ?a))" => "(itr (- ?a))"),
+            egg::rewrite!("itr-plus"; "(+ (itr ?a) (itr ?b))" => "(itr (+ ?a ?b))"),
+            egg::rewrite!("itr-mul"; "(* (itr ?a) (itr ?b))" => "(itr (* ?a ?b))"),
+            egg::rewrite!("itr-div"; "(/ (itr ?a) (itr ?b))" => "(/ ?a ?b)"),
+            egg::rewrite!("itr-mod"; "(% (itr ?a) (itr ?b))" => "(itr (% ?a ?b))"),
+            egg::rewrite!("itr-eq"; "(== (itr ?a) (itr ?b))" => "(== ?a ?b)"),
+            egg::rewrite!("itr-lt"; "(< (itr ?a) (itr ?b))" => "(< ?a ?b)"),
 
             egg::Rewrite::new("bool-search", bool_rewriter, EquateApplier).unwrap(),
             egg::Rewrite::new("snap-inj", SnapshotInjective, EquateApplier).unwrap(),
@@ -127,10 +171,15 @@ pub fn rules(constants: Constants) -> &'static [egg::Rewrite<Exp, Meaning>] {
     })
 }
 
-fn is_number(var: &'static str) -> impl Fn(&mut EGraph<Exp, Meaning>, Id, &Subst) -> bool {
-    let var = var.parse().unwrap();
-    move |egraph, _, subst| egraph[subst[var]].nodes.iter().any(|node| matches!(node, Exp::Const(silver_oxide::ast::Const::Int(_))))
+fn has_ty(ty: TyKind) -> impl Fn(&mut EGraph<Exp, Meaning>, Id, &Subst) -> bool {
+    move |egraph, id, _|
+        egraph[id].data.is_type(ty)
 }
+
+// fn is_number(var: &'static str) -> impl Fn(&mut EGraph<Exp, Meaning>, Id, &Subst) -> bool {
+//     let var = var.parse().unwrap();
+//     move |egraph, _, subst| egraph[subst[var]].nodes.iter().any(|node| matches!(node, Exp::Const(silver_oxide::parse::Const::Int(_))))
+// }
 
 // fn definitely_equal(v1: &'static str, v2: &'static str) -> impl Fn(&mut EGraph<Exp, Meaning>, Id, &Subst) -> bool {
 //     compare(v1, v2, |r| r == Some(true))
@@ -225,29 +274,55 @@ impl Searcher<Exp, Meaning> for SnapshotInjective {
         mut limit: usize,
     ) -> Option<egg::SearchMatches<Exp>> {
         let mut substs = Vec::new();
-        let mut last_snapshot = None;
-        for enode in &egraph[eclass].nodes {
-            let Exp::Snapshot(snapshot) = enode else {
-                continue;
-            };
-            let last = last_snapshot.replace(snapshot);
-            let Some(last) = last else {
-                continue;
-            };
-            if snapshot.len() != last.len() {
-                eprintln!("SnapshotInjective: different lengths");
-                continue;
+        let eclass_ = &egraph[eclass];
+        match &eclass_.data {
+            Ty::Snapshot(_) => {
+                let mut last_snapshot = None;
+                for enode in &eclass_.nodes {
+                    let Exp::Snapshot(snapshot, _) = enode else {
+                        continue;
+                    };
+                    let last = last_snapshot.replace(snapshot);
+                    let Some(last) = last else {
+                        continue;
+                    };
+                    if snapshot.len() != last.len() {
+                        eprintln!("SnapshotInjective: different lengths");
+                        continue;
+                    }
+                    if limit == 0 {
+                        break;
+                    }
+                    for (last, snap) in last.iter().zip(snapshot.iter()) {
+                        let mut subst = egg::Subst::with_capacity(2);
+                        subst.insert("?0".parse().unwrap(), *last);
+                        subst.insert("?1".parse().unwrap(), *snap);
+                        substs.push(subst);
+                    }
+                    limit -= 1;
+                }
             }
-            if limit == 0 {
-                break;
+            Ty::Real(_) => {
+                let mut last_itr = None;
+                for enode in &eclass_.nodes {
+                    let Exp::UnOp(UnOp::IntToReal, itr) = enode else {
+                        continue;
+                    };
+                    let last = last_itr.replace(itr);
+                    let Some(last) = last else {
+                        continue;
+                    };
+                    if limit == 0 {
+                        break;
+                    }
+                    let mut subst = egg::Subst::with_capacity(2);
+                    subst.insert("?0".parse().unwrap(), *last);
+                    subst.insert("?1".parse().unwrap(), *itr);
+                    substs.push(subst);
+                    limit -= 1;
+                }
             }
-            for (last, snap) in last.iter().zip(snapshot.iter()) {
-                let mut subst = egg::Subst::with_capacity(2);
-                subst.insert("?0".parse().unwrap(), *last);
-                subst.insert("?1".parse().unwrap(), *snap);
-                substs.push(subst);
-            }
-            limit -= 1;
+            _ => (),
         }
         (!substs.is_empty()).then(|| egg::SearchMatches {
             eclass,

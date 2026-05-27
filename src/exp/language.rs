@@ -1,12 +1,14 @@
 use std::fmt;
 
+use silver_oxide::program::Local;
+
 use crate::{error::Error, pure::{EGraph, Ty, TyKind}};
 
 pub type Snapshot = egg::Id;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExpG<T> {
-    Const(silver_oxide::ast::Const),
+    Const(silver_oxide::parse::ConstKind),
     // Result,
     // Old(Option<Ident>, Box<Exp>),
     // Lhs(Box<Exp>),
@@ -25,9 +27,9 @@ pub enum ExpG<T> {
     // LetIn(Ident, Box<Exp>, Box<Exp>),
     // ForPerm(Vec<(Ident, Type)>, Box<ResAccess>, Box<Exp>),
     // Acc(Box<AccExp>),
-    FuncApp(silver_oxide::ast::Ident, Vec<T>, TyKind),
+    FuncApp(silver_oxide::parse::Ident, Vec<T>, TyKind),
     /// Should never have parents!
-    PredicateApp(silver_oxide::ast::Ident, Vec<T>),
+    PredicateApp(silver_oxide::parse::Ident, Vec<T>),
     SymbolicValue(SymbolicValue),
     BinOp(BinOp, [T; 2]),
     Ternary([T; 3]),
@@ -35,12 +37,12 @@ pub enum ExpG<T> {
     // Index(Box<Exp>, Box<IndexOp>),
     UnOp(UnOp, T),
     // InhaleExhale(Box<Exp>, Box<Exp>),
-    Snapshot(Vec<T>),
-    Project(T, usize),
-    /// Going down to `TyKind::Snapshot -> self.1`
-    Downcast(T, TyKind),
-    /// Going up from `self.1 -> TyKind::Snapshot`
-    Upcast(T, TyKind),
+    Snapshot(Vec<T>, ()),
+    Project(T, usize, TyKind),
+    // /// Going from `self.1 -> self.2`
+    // TyCast(T, TyKind, TyKind),
+
+    SymbolicValue2(SymbolicValue2),
 }
 
 pub type Exp = ExpG<egg::Id>;
@@ -72,8 +74,35 @@ pub type Exp = ExpG<egg::Id>;
 //     }
 // }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolicValue2(pub u64, pub Local, pub silver_oxide::program::Ty<'static>);
+
+#[derive(Debug, Default, Clone)]
 pub struct SymbolicValue(pub u64, pub Option<String>, pub TyKind);
+
+impl PartialEq for SymbolicValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for SymbolicValue {}
+
+impl PartialOrd for SymbolicValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+impl Ord for SymbolicValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl std::hash::Hash for SymbolicValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
 
 impl<T: fmt::Display> fmt::Display for ExpG<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -94,8 +123,8 @@ impl<T: fmt::Display> fmt::Display for ExpG<T> {
             Self::BinOp(op, [l, r]) => write!(f, "(#{} {:?} #{})", l, op, r),
             Self::Ternary([c, t, e]) => write!(f, "(#{} ? #{} : #{})", c, t, e),
             Self::UnOp(op, e) => write!(f, "{op}#{}", e),
-            Self::Snapshot(es) => {
-                write!(f, "snap(")?;
+            Self::Snapshot(es, eid) => {
+                write!(f, "snap_(")?;
                 for (i, e) in es.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -104,9 +133,9 @@ impl<T: fmt::Display> fmt::Display for ExpG<T> {
                 }
                 write!(f, ")")
             }
-            Self::Project(e, i) => write!(f, "#{e}[{i}]"),
-            Self::Downcast(e, _) => write!(f, "#{e}⟱"),
-            Self::Upcast(e, _) => write!(f, "#{e}⟰"),
+            Self::Project(e, i, _) => write!(f, "#{e}[{i}]"),
+            _ => todo!(),
+            // Self::TyCast(e, _, ty) => write!(f, "#{e} as {ty}"),
         }
     }
 }
@@ -125,8 +154,8 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    pub fn translate(op: silver_oxide::ast::BinOp, mut lhs: egg::Id, mut rhs: egg::Id, egraph: &mut EGraph) -> egg::Id {
-        use silver_oxide::ast::BinOp::*;
+    pub fn translate(op: silver_oxide::parse::BinOp, mut lhs: egg::Id, mut rhs: egg::Id, egraph: &mut EGraph) -> egg::Id {
+        use silver_oxide::parse::BinOp::*;
         let op = match op {
             Implies => {
                 lhs = egraph.add(Exp::UnOp(UnOp::Not, lhs));
@@ -183,6 +212,7 @@ impl BinOp {
 pub enum UnOp {
     Neg,
     Not,
+    IntToReal
 }
 
 impl fmt::Display for UnOp {
@@ -190,6 +220,7 @@ impl fmt::Display for UnOp {
         match self {
             UnOp::Neg => write!(f, "-"),
             UnOp::Not => write!(f, "!"),
+            UnOp::IntToReal => write!(f, "itr"),
         }
     }
 }

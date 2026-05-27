@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use fxhash::FxHashMap;
+use crate::HashMap;
 
 use crate::{exp::Exp, pure::EGraph};
 
@@ -73,7 +73,7 @@ impl CTreeChunk {
 impl HeapChunk {
     fn merge(&mut self, other: HeapChunk, egraph: &mut EGraph) {
         egraph.equate(self.symbolic_value, other.symbolic_value, "heap merge");
-        self.permission = egraph.add(Exp::BinOp(silver_oxide::ast::BinOp::Plus, [self.permission, other.permission]));
+        self.permission = egraph.add(Exp::BinOp(silver_oxide::parse::BinOp::Plus, [self.permission, other.permission]));
     }
 }
 

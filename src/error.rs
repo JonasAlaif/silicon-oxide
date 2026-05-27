@@ -1,13 +1,14 @@
-use silver_oxide::ast;
+use silver_oxide::parse;
 
 #[derive(Debug)]
 pub enum Error<'a> {
     Expression {
-        exp: &'a ast::Exp,
+        exp: &'a parse::Exp,
         kind: ExpressionError,
     },
+    // Permission
     Undeclared {
-        ident: &'a ast::Ident,
+        ident: &'a parse::Ident,
         kind: UndeclaredError,
     },
     Type,
@@ -15,35 +16,35 @@ pub enum Error<'a> {
 }
 
 impl<'a> Error<'a> {
-    pub fn expression(exp: &'a ast::Exp, kind: ExpressionError) -> Self {
+    pub fn expression(exp: &'a parse::Exp, kind: ExpressionError) -> Self {
         Self::Expression { exp, kind }
     }
 
-    pub fn undeclared_variable(ident: &'a ast::Ident) -> Self {
+    pub fn undeclared_variable(ident: &'a parse::Ident) -> Self {
         Self::Undeclared { ident, kind: UndeclaredError::Variable }
     }
 
-    pub fn undeclared_function(ident: &'a ast::Ident) -> Self {
+    pub fn undeclared_function(ident: &'a parse::Ident) -> Self {
         Self::Undeclared { ident, kind: UndeclaredError::Function }
     }
 
-    pub fn undeclared_field(ident: &'a ast::Ident) -> Self {
+    pub fn undeclared_field(ident: &'a parse::Ident) -> Self {
         Self::Undeclared { ident, kind: UndeclaredError::Field }
     }
 
-    pub fn divide_by_zero(exp: &'a ast::Exp, assertion: egg::Id) -> Self {
+    pub fn divide_by_zero(exp: &'a parse::Exp, assertion: egg::Id) -> Self {
         Self::Expression { exp, kind: ExpressionError::Assertion { assertion, kind: AssertionError::DivideByZero } }
     }
 
-    pub fn type_error(exp: &'a ast::Exp) -> Self {
+    pub fn type_error(exp: &'a parse::Exp) -> Self {
         Self::Expression { exp, kind: ExpressionError::TypeError }
     }
 
-    pub fn exhale(exp: &'a ast::Exp, assertion: egg::Id) -> Self {
+    pub fn exhale(exp: &'a parse::Exp, assertion: egg::Id) -> Self {
         Self::Expression { exp, kind: ExpressionError::Assertion { assertion, kind: AssertionError::Exhale } }
     }
 
-    pub fn function_precondition(exp: &'a ast::Exp, assertion: egg::Id) -> Self {
+    pub fn function_precondition(exp: &'a parse::Exp, assertion: egg::Id) -> Self {
         Self::Expression { exp, kind: ExpressionError::Assertion { assertion, kind: AssertionError::FunctionPrecondition } }
     }
 }
@@ -91,44 +92,44 @@ pub enum AssertionError {
     Exhale,
     FunctionPrecondition,
 
-    // ReadPermission(&'a silver_oxide::ast::Exp, &'a silver_oxide::ast::Ident),
-    // WritePermission(&'a silver_oxide::ast::Exp, &'a silver_oxide::ast::Ident),
-    // UndeclaredVariable(&'a silver_oxide::ast::Ident),
-    // UndeclaredFunction(&'a silver_oxide::ast::Ident),
-    // UndeclaredField(&'a silver_oxide::ast::Ident),
-    // ExhaleMissingPermission(&'a silver_oxide::ast::Exp),
+    // ReadPermission(&'a silver_oxide::parse::Exp, &'a silver_oxide::parse::Ident),
+    // WritePermission(&'a silver_oxide::parse::Exp, &'a silver_oxide::parse::Ident),
+    // UndeclaredVariable(&'a silver_oxide::parse::Ident),
+    // UndeclaredFunction(&'a silver_oxide::parse::Ident),
+    // UndeclaredField(&'a silver_oxide::parse::Ident),
+    // ExhaleMissingPermission(&'a silver_oxide::parse::Exp),
     // ExhaleUnknown(egg::Id),
-    // DivideByZero(&'a silver_oxide::ast::Exp),
+    // DivideByZero(&'a silver_oxide::parse::Exp),
     // TypeError,
 
     // MiscError(u32),
 }
 
 // impl<'a> Error<'a> {
-//     pub fn no_field(failing_check: egg::Id, receiver: &'a silver_oxide::ast::Exp, field: &'a silver_oxide::ast::Ident) -> Self {
+//     pub fn no_field(failing_check: egg::Id, receiver: &'a silver_oxide::parse::Exp, field: &'a silver_oxide::parse::Ident) -> Self {
 //         Error::ReadPermission(receiver, field)
 //     }
-//     pub fn missing_write_permission(failing_check: egg::Id, receiver: &'a silver_oxide::ast::Exp, field: &'a silver_oxide::ast::Ident) -> Self {
+//     pub fn missing_write_permission(failing_check: egg::Id, receiver: &'a silver_oxide::parse::Exp, field: &'a silver_oxide::parse::Ident) -> Self {
 //         Error::WritePermission(receiver, field)
 //     }
 
-//     pub fn undeclared_variable(ident: &'a silver_oxide::ast::Ident) -> Self {
+//     pub fn undeclared_variable(ident: &'a silver_oxide::parse::Ident) -> Self {
 //         Error::UndeclaredVariable(ident)
 //     }
-//     pub fn undeclared_function(ident: &'a silver_oxide::ast::Ident) -> Self {
+//     pub fn undeclared_function(ident: &'a silver_oxide::parse::Ident) -> Self {
 //         Error::UndeclaredFunction(ident)
 //     }
-//     pub fn undeclared_field(ident: &'a silver_oxide::ast::Ident) -> Self {
+//     pub fn undeclared_field(ident: &'a silver_oxide::parse::Ident) -> Self {
 //         Error::UndeclaredField(ident)
 //     }
 
-//     pub fn exhale_missing_permission(acc: &'a silver_oxide::ast::Exp) -> Self {
+//     pub fn exhale_missing_permission(acc: &'a silver_oxide::parse::Exp) -> Self {
 //         Error::ExhaleMissingPermission(acc)
 //     }
 //     pub fn exhale_unknown(exp: egg::Id) -> Self {
 //         Error::ExhaleUnknown(exp)
 //     }
-//     pub fn divide_by_zero(exp: &'a silver_oxide::ast::Exp, check: egg::Id) -> Self {
+//     pub fn divide_by_zero(exp: &'a silver_oxide::parse::Exp, check: egg::Id) -> Self {
 //         Error::DivideByZero(exp, check)
 //     }
 //     pub fn type_error() -> Self {

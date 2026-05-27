@@ -1,12 +1,19 @@
 use std::path::PathBuf;
 
-use num_bigint::BigInt;
+use silver_oxide::log_dir;
 
-use crate::{exp::{BinOp, Exp, PathCondition, UnOp}, pure::{Ty, EGraph}, silicon::Silicon};
+use crate::{pure::{EGraph, EggExp, PathCondition}, silicon::Silicon};
 
-impl EGraph {
+impl EGraph<'_> {
+    pub fn log_pure(&mut self, file_name: &str, label: Option<String>) {
+        let mut path = PathBuf::from(log_dir());
+        path.push(file_name);
+
+        let label = label.map(|label| format!("label=\"{}\"", label.replace('"', "\\\"")));
+        self.dot(path, None, label);
+    }
     pub fn dot(&self, mut path: PathBuf, header: Option<String>, footer: Option<String>) {
-        let mut egraph = self.egraph.clone();
+        let mut egraph = self.egraph_for_log();
         for class in egraph.classes_mut() {
             class.nodes.retain(|node| {
                 node.log(class.id, self)
@@ -26,6 +33,9 @@ impl EGraph {
             dot = dot.replacen(&subgraph, &format!("{subgraph}    label=\"{}\";\n", class.data), 1);
         }
 
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("Unable to create parent directory");
+        }
         path.set_extension("dot");
         std::fs::write(&path, &dot).expect("Unable to write log file");
 
@@ -35,18 +45,21 @@ impl EGraph {
         let mut child = Command::new("dot")
             .args(&["-Tpdf", "-o", path.as_os_str().to_str().unwrap()])
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
         write!(stdin, "{dot}").unwrap();
         assert_eq!(child.wait().unwrap().code(), Some(0));
+        println!("__Wrote log to {}", path.display());
     }
 }
 
-impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
+impl<'a, 'tcx> Silicon<'a, 'tcx> {
     pub fn log_pure(&mut self, file_name: &str, label: Option<String>) {
-        let path = self.log_dir.join(file_name);
+        let mut path = PathBuf::from(log_dir());
+        path.push(file_name);
         let heap = self.dot_subgraph();
 
         let label = label.map(|label| format!("label=\"{}\"", label.replace('"', "\\\"")));
@@ -54,32 +67,33 @@ impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
     }
 
     fn dot_subgraph(&mut self) -> String {
+        let egraph = &mut self.value_state.egraph;
         let mut nodes = Vec::<String>::new();
         let mut edges = Vec::<String>::new();
 
-        for (var, value) in self.stmt_state.bindings.iter() {
-            let var = var.as_ref().map(|v| v.0.as_str()).unwrap_or("result");
-            let value = self.value_state.egraph.normalise(*value);
-            nodes.push(format!("{var}[label = \"{var} := #{value}\"]"));
-            edges.push(format!("{var}:se -> {value}.0 [lhead = cluster_{value}, ]"));
-        }
+        // for (var, value) in self.stmt_state.bindings.iter() {
+        //     let var = var.as_ref().map(|v| v.0.as_str()).unwrap_or("result");
+        //     let value = self.value_state.egraph.normalise(*value);
+        //     nodes.push(format!("{var}[label = \"{var} := #{value}\"]"));
+        //     edges.push(format!("{var}:se -> {value}.0 [lhead = cluster_{value}, ]"));
+        // }
 
-        let condition = PathCondition::new(&self.value_state.egraph);
+        let condition = PathCondition::default();
         let chunks: Vec<_> = self.value_state.heap.chunks()
             .map(|(id, chunk)|
-                (id, chunk.get_chunk(&mut self.value_state.egraph, condition, None))
+                (id, chunk.get_chunk(egraph, &condition, None, false).0)
             )
             .collect();
         for (id, chunk) in chunks {
-            let chunk = chunk.get_chunk_unsafe();
-            if self.value_state.egraph.is_number(chunk.permission, BigInt::from(0u8)) {
+            use num::{Zero, One};
+            if egraph.as_real(chunk.permission).is_some_and(|p| p.is_zero()) {
                 continue;
             }
 
-            let id = self.value_state.egraph.normalise(id);
-            let value = self.value_state.egraph.normalise(chunk.symbolic_value);
-            let permission = Some(self.value_state.egraph.normalise(chunk.permission))
-                .filter(|id| !self.value_state.egraph.is_number(*id, BigInt::from(1u8)));
+            let id = egraph.normalise(id);
+            let value = egraph.normalise(chunk.symbolic_value);
+            let permission = Some(egraph.normalise(chunk.permission))
+                .filter(|id| egraph.as_real(*id).is_none_or(|p| !p.is_one()));
             let p = permission.map(|id| format!("#{id}")).unwrap_or_default();
             nodes.push(format!("chunk_{id}[label = \"#{id} ↦{p} #{value}\"]"));
             edges.push(format!("chunk_{id}:sw -> {id}.0 [lhead = cluster_{id}, ]"));
@@ -92,44 +106,47 @@ impl<'a, 'e, F, M> Silicon<'a, 'e, F, M> {
     }
 }
 
-impl Exp {
+impl EggExp {
     pub fn log(&self, id: egg::Id, egraph: &EGraph) -> bool {
-        let is_bool_constant = |id: &egg::Id| matches!(&egraph.egraph[*id].data, Ty::Bool(Some(_)));
-        let is_rational_constant = |id: &egg::Id| matches!(&egraph.egraph[*id].data, Ty::Rational(Some(_)));
-        match self {
-            Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Lt | BinOp::Eq, [a, b]) if egraph.ids_equal(*a, *b) => false,
+        return true;
+        // let is_bool_constant = |id: &egg::Id| matches!(&egraph.egraph[*id].data, Ty::Bool(Some(_)));
+        // let is_num_constant = |id: &egg::Id| matches!(&egraph.egraph[*id].data, Ty::Integer(Some(_)) | Ty::Real(Some(_)));
+        // match self {
+        //     Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Lt | BinOp::Eq, [a, b]) if egraph.ids_equal(*a, *b) => false,
 
-            Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Eq, [a, b])
-                if is_bool_constant(a) && is_bool_constant(b) => false,
-            Exp::UnOp(UnOp::Not, a) if is_bool_constant(a) => false,
-            Exp::Ternary([c, _, _]) if is_bool_constant(c) => false,
+        //     Exp::BinOp(BinOp::And | BinOp::Or | BinOp::Eq, [a, b])
+        //         if is_bool_constant(a) && is_bool_constant(b) => false,
+        //     Exp::UnOp(UnOp::Not, a) if is_bool_constant(a) => false,
+        //     Exp::Ternary([c, _, _]) if is_bool_constant(c) => false,
 
-            Exp::BinOp(BinOp::Eq | BinOp::Lt | BinOp::Plus | BinOp::Mult | BinOp::Div | BinOp::Mod, [a, b])
-                if is_rational_constant(a) && is_rational_constant(b) => false,
-            Exp::UnOp(UnOp::Neg, a) if is_rational_constant(a) => false,
+        //     Exp::BinOp(BinOp::Eq | BinOp::Lt | BinOp::Plus | BinOp::Mult | BinOp::Div | BinOp::Mod, [a, b])
+        //         if is_num_constant(a) && is_num_constant(b) => false,
+        //     Exp::UnOp(UnOp::Neg, a) if is_num_constant(a) => false,
+        //     Exp::UnOp(UnOp::IntToReal, a) if is_num_constant(a) => false,
 
-            Exp::BinOp(BinOp::Or, [a, b]) if egraph.is_true(*a) || egraph.is_true(*b) => false,
-            Exp::BinOp(BinOp::And, [a, b]) if egraph.is_false(*a) || egraph.is_false(*b) => false,
+        //     Exp::BinOp(BinOp::Or, [a, b]) if egraph.is_true(*a) || egraph.is_true(*b) => false,
+        //     Exp::BinOp(BinOp::And, [a, b]) if egraph.is_false(*a) || egraph.is_false(*b) => false,
 
-            Exp::BinOp(BinOp::And, [a, b]) if egraph.ids_equal(id, *a) && egraph.is_true(*b) => false,
-            Exp::BinOp(BinOp::Or, [a, b]) if egraph.ids_equal(id, *a) && egraph.is_false(*b) => false,
+        //     Exp::BinOp(BinOp::And, [a, b]) if egraph.ids_equal(id, *a) && egraph.is_true(*b) => false,
+        //     Exp::BinOp(BinOp::Or, [a, b]) if egraph.ids_equal(id, *a) && egraph.is_false(*b) => false,
 
-            Exp::BinOp(BinOp::Mult | BinOp::Plus | BinOp::And | BinOp::Or | BinOp::Eq, [a, b]) if egraph.normalise(*a) < egraph.normalise(*b) => false,
-            Exp::BinOp(BinOp::Mult | BinOp::Div, [_, b]) if egraph.is_number(*b, BigInt::from(1u8)) => false,
-            Exp::BinOp(BinOp::Mult, [a, _]) if egraph.is_number(*a, BigInt::from(1u8)) => false,
-            Exp::BinOp(BinOp::Plus, [a, b]) if egraph.is_number(*a, BigInt::from(0u8)) || egraph.is_number(*b, BigInt::from(0u8)) => false,
-            Exp::BinOp(BinOp::Div, [a, _]) if egraph.is_number(*a, BigInt::from(0u8)) => false,
-            _ => true,
-        }
+        //     Exp::BinOp(BinOp::Mult | BinOp::Plus | BinOp::And | BinOp::Or | BinOp::Eq, [a, b]) if egraph.normalise(*a) < egraph.normalise(*b) => false,
+        //     Exp::BinOp(BinOp::Mult | BinOp::Div, [_, b]) if egraph.is_number(*b, BigInt::from(1u8)) => false,
+        //     Exp::BinOp(BinOp::Mult, [a, _]) if egraph.is_number(*a, BigInt::from(1u8)) => false,
+        //     Exp::BinOp(BinOp::Plus, [a, b]) if egraph.is_number(*a, BigInt::from(0u8)) || egraph.is_number(*b, BigInt::from(0u8)) => false,
+        //     Exp::BinOp(BinOp::Div, [a, _]) if egraph.is_number(*a, BigInt::from(0u8)) => false,
+        //     _ => true,
+        // }
     }
 }
 
-impl EGraph {
-    fn ids_equal(&self, a: egg::Id, b: egg::Id) -> bool {
-        self.normalise(a) == self.normalise(b)
-    }
+// impl EGraph {
+//     fn ids_equal(&self, a: egg::Id, b: egg::Id) -> bool {
+//         self.normalise(a) == self.normalise(b)
+//     }
 
-    fn is_number(&self, id: egg::Id, number: BigInt) -> bool {
-        matches!(&self.egraph[id].data, Ty::Rational(Some(r)) if *r.numer() == number && r.is_integer())
-    }
-}
+//     fn is_number(&self, id: egg::Id, number: BigInt) -> bool {
+//         matches!(&self.egraph[id].data, Ty::Real(Some(r)) if *r.numer() == number && r.is_integer())
+//         // matches!(&self.egraph[id].data, Ty::Integer(Some(i)) if *i == number)
+//     }
+// }
